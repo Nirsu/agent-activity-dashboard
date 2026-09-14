@@ -1,22 +1,22 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/agent-activity-dashboard/hooks/hook.js" }] }
+      { "hooks": [{ "type": "command", "command": "node /Volumes/Storage/projects/Harmonie/apps/agent-activity-dashboard/hooks/hook.js" }] }
     ]
   }
 }

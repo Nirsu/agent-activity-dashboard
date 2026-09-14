@@ -5,7 +5,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/package.json
 COPY ui/package.json ui/package.json
-RUN npm ci
+# On a proxied Docker Desktop this install failed twice with npm network
+# errors at the default concurrency (maxsockets=15) and succeeded with the
+# flags below. The cause was NOT isolated to concurrency - treat this as a
+# workaround, not a diagnosis. Builders that do not need it can restore
+# normal behaviour with --build-arg NPM_INSTALL_FLAGS="".
+ARG NPM_INSTALL_FLAGS="--maxsockets=3 --fetch-retries=5"
+RUN npm ci --no-audit --no-fund $NPM_INSTALL_FLAGS
 
 COPY server server
 COPY ui ui

@@ -7,7 +7,10 @@ export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export OTEL_LOGS_EXPORTER=otlp
 export OTEL_METRICS_EXPORTER=otlp
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# Default targets `npm run dev:server` (port 4318). The Docker stack does not
+# publish 4318 on the host, so for `docker compose up` set AAD_URL first:
+#   AAD_URL=http://127.0.0.1:18418 source ./otel-env.sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=${AAD_URL:-http://localhost:4318}
 
 # Real-time for the POC (default export interval is 60s / 10s).
 export OTEL_LOGS_EXPORT_INTERVAL=1000

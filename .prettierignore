@@ -1,0 +1,9 @@
+node_modules/
+dist/
+server/data/
+.env*
+brain.projects.json
+
+# Preserve source-of-truth documents and imported exports.
+README.md
+save_notion/

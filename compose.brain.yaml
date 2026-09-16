@@ -1,0 +1,26 @@
+# Optional Brain sources for the existing Linux Docker stack.
+# Use a complete Git checkout (including .git), not a linked worktree.
+services:
+  server:
+    environment:
+      VIEWER_TOKEN: ${VIEWER_TOKEN:?set VIEWER_TOKEN in .env for Brain behind the proxy}
+      BRAIN_REPO_PATH: /sources/repo
+      BRAIN_NOTION_PATH: /sources/notion
+      BRAIN_DB_PATH: /app/server/data/brain.db
+      BRAIN_PROJECTS_PATH: /sources/repo/brain.projects.json
+      BRAIN_MODEL: ${BRAIN_MODEL:-}
+      BRAIN_REQUEST_TIMEOUT_MS: ${BRAIN_REQUEST_TIMEOUT_MS:-300000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - type: bind
+        source: ${BRAIN_REPO_MOUNT:-.}
+        target: /sources/repo
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BRAIN_NOTION_MOUNT:-../save_notion}
+        target: /sources/notion
+        read_only: true
+        bind:
+          create_host_path: false

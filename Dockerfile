@@ -21,6 +21,11 @@ RUN npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS server
 
+# Brain reads a mounted Git checkout; credentials and sources stay outside the image.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory /sources/repo
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4318 \
@@ -33,6 +38,7 @@ COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/analytics analytics
 COPY --from=build /app/server/package.json server/package.json
 COPY --from=build /app/server/dist server/dist
+COPY --from=build /app/server/prompts server/prompts
 
 RUN mkdir -p /app/server/data/delivery/latest-success && chown -R node:node /app/server/data
 USER node

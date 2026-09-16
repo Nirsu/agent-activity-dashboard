@@ -1,0 +1,68 @@
+{
+  "git": {
+    "timeoutMs": 15000,
+    "maxBufferBytes": 2000000,
+    "demoMaxBufferBytes": 2097152
+  },
+  "analysis": {
+    "defaultRequestTimeoutMs": 300000,
+    "minRequestTimeoutMs": 1000,
+    "maxRequestTimeoutMs": 1800000,
+    "maxSourceBytes": 120000,
+    "maxSources": 60,
+    "maxInputCharacters": 220000,
+    "maxOutputTokens": 5000,
+    "maxRequirements": 12,
+    "maxEvidencePerRequirement": 8,
+    "maxResponseItems": 100,
+    "maxResponseTextCharacters": 100000,
+    "maxTextCharacters": 3000,
+    "maxQuoteCharacters": 4000,
+    "maxTitleCharacters": 160,
+    "maxRequirementIdCharacters": 40
+  },
+  "projects": {
+    "maxProjects": 20,
+    "maxSpecifications": 12,
+    "maxCodePaths": 30,
+    "maxIdCharacters": 80,
+    "maxNameCharacters": 120,
+    "maxGitPathCharacters": 300,
+    "maxLocalPathCharacters": 500
+  },
+  "demo": {
+    "maxDirectoryDepth": 4,
+    "maxDocuments": 50,
+    "maxDocumentBytes": 250000
+  },
+  "memory": {
+    "maxRecentRuns": 30,
+    "summaryLines": 4,
+    "summaryCharacters": 550,
+    "maxRecordIdCharacters": 100
+  },
+  "search": {
+    "minTermCharacters": 3,
+    "maxQueryCharacters": 300,
+    "maxMatchesPerSource": 3,
+    "maxResults": 12
+  },
+  "review": {
+    "minNoteCharacters": 8,
+    "maxNoteCharacters": 4000,
+    "maxActivationNoteCharacters": 2000
+  },
+  "ui": {
+    "pollIntervalMs": 2000,
+    "downloadUrlReleaseDelayMs": 1000
+  },
+  "client": {
+    "requestTimeoutMs": 15000,
+    "pollIntervalMs": 1500,
+    "completionGraceMs": 60000
+  },
+  "launcher": {
+    "shutdownTimeoutMs": 10000,
+    "defaultUiPort": 5173
+  }
+}

@@ -36,6 +36,7 @@ function localDay(ts: number): string {
 
 class History {
   private db: import('better-sqlite3').Database | null = null;
+  private pruneTimer?: ReturnType<typeof setInterval>;
   enabled = false;
   private insEvent?: import('better-sqlite3').Statement;
   private insUsage?: import('better-sqlite3').Statement;
@@ -109,12 +110,20 @@ class History {
       this.db = db;
       this.enabled = true;
       this.prune();
-      setInterval(() => this.prune(), 3_600_000).unref();
+      this.pruneTimer = setInterval(() => this.prune(), 3_600_000);
+      this.pruneTimer.unref();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[history] persistence disabled:', (err as Error).message);
       this.enabled = false;
     }
+  }
+
+  close(): void {
+    clearInterval(this.pruneTimer);
+    this.enabled = false;
+    this.db?.close();
+    this.db = null;
   }
 
   recordEvent(e: AgentEvent): void {

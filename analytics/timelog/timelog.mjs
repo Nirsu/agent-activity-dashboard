@@ -3,7 +3,7 @@
 // AI, plus friction. This paired estimate/actual is the only causal signal that
 // AI moved delivery — and this POC week is the only time it can be captured.
 //
-//   node timelog.mjs add --task "Adhésion form validation" \
+//   node timelog.mjs add --task "Membership form validation" \
 //        --est 180 --actual 95 --ticket ABC-412 --who dev1 \
 //        --friction "hallucinated a deprecated API; 15min to catch"
 //   node timelog.mjs summary

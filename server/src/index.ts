@@ -12,6 +12,7 @@ import { registerWebSocket } from './ws.js';
 import { history } from './db.js';
 import { cachedTitle, isTicketKey, resolveTitle } from './jira.js';
 import { DeliveryService, type DeliverySettingsInput } from './delivery.js';
+import { registerBrain } from './brain.js';
 import type { ActivitySubtype, AgentEvent } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,7 @@ const LEGACY_DORA_PATH = resolve(__dirname, '../../analytics/baseline/out/latest
 
 let activitySeq = 0;
 let historyInitialized = false;
+let historyUsers = 0;
 
 const nextActivityId = (suffix: string) =>
   `${Date.now().toString(36)}-${(++activitySeq).toString(36)}-${suffix}`;
@@ -101,6 +103,12 @@ export async function buildApp(options: { deliveryService?: DeliveryService } = 
   }
 
   await ensureHistoryInit();
+  historyUsers += 1;
+  app.addHook('onClose', async () => {
+    store.removeAllListeners();
+    historyUsers -= 1;
+    if (historyUsers === 0) { history.close(); historyInitialized = false; }
+  });
   if (history.enabled) {
     store.restoreCumulative(history.loadCumulative());
     store.hydrateToday(history.todayTotals());
@@ -304,6 +312,7 @@ export async function buildApp(options: { deliveryService?: DeliveryService } = 
     }
   });
 
+  await registerBrain(app);
   return app;
 }
 

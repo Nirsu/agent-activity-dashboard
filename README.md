@@ -1,5 +1,17 @@
 # Agent Activity Dashboard
 
+## Harmony Brain — local demo
+
+The **Harmony Brain** tab adds a local source memory, three explicit comparison rules,
+and persistent human-review forms. This demo uses deterministic extraction and checks;
+it makes no AI calls. See [the presentation walkthrough](DEMO-BRAIN.md) for setup,
+the five-minute demo, and its limits.
+
+The **Analyses par projet** view adds actual model calls once configured, with
+project-specific specifications, Git revisions and human review. See
+[agent setup and the first real test](BRAIN-AGENTS.md). Without API access, it
+explicitly remains unavailable; it does not fabricate AI results.
+
 Real-time, local Mission Control showing **what Claude Code and Codex agents are
 doing** during the build phase — which provider and client are active, on which
 ticket, which safe tool summary is running, and how much usage it represents.
@@ -7,7 +19,8 @@ ticket, which safe tool summary is running, and how much usage it represents.
 > Observability of **agents** (quality, security, cost) — not surveillance of people.
 > Prompt content is never logged. Default view is aggregated by stream.
 
-Built for a POC on developer Macs. Live state uses an in-memory ring buffer;
+Originally built for a POC on developer Macs. The Node application runs on
+Windows, macOS and Linux; Docker uses Linux containers. Live state uses an in-memory ring buffer;
 privacy-safe history is retained in SQLite for 60 rolling days by default.
 
 ---
@@ -37,6 +50,21 @@ hooks (SessionStart, …) ──────►┤   ├─ POST /v1/logs      (
 
 ## Quick start
 
+Prerequisites: Node 22 and Git on the PATH. For **Harmony Brain**, use the same
+commands on Windows, macOS and Linux:
+
+```text
+npm ci
+npm run build
+npm run brain
+```
+
+Open [Harmony Brain](http://127.0.0.1:5173/#brain). Logs stay in the terminal;
+Ctrl+C stops both the API and UI. No OS-specific launcher is needed.
+See [Brain setup](DEMO-BRAIN.md) for local exports and the Docker source mounts.
+
+For development with automatic reload, use two terminals:
+
 ```bash
 # 1. install (npm workspaces installs server + ui)
 npm install
@@ -47,9 +75,12 @@ npm run dev:server
 # 3. run the UI (http://localhost:5173)
 npm run dev:ui
 
-# 4. point a Claude Code session at the server, in the shell where you run `claude`:
-source ./otel-env.sh
 ```
+
+The optional agent telemetry setup is separate from starting the app:
+`source ./otel-env.sh` is a Bash/Zsh helper for macOS/Linux. On Windows, configure
+the equivalent environment variables in the agent's environment; this helper
+is not required to start the dashboard or Brain.
 
 Then install the hooks (see [`hooks/README.md`](./hooks/README.md)) so the
 dashboard gets ticket/branch context and precise live tool status. The same
@@ -63,10 +94,11 @@ port `18418`:
 ```bash
 docker compose up --build -d
 npm run demo:seed
-open http://127.0.0.1:18418
 ```
 
-Override the port when necessary with `AAD_PORT=19000 docker compose up -d`.
+Open [the dashboard](http://127.0.0.1:18418) in a browser.
+
+Override the port by setting `AAD_PORT=19000` in `.env` before starting Compose.
 SQLite history and the cost ledger live in the `aad-data` named volume and
 survive container restarts. `docker compose down` stops the stack without
 deleting that data; adding `--volumes` deletes it.

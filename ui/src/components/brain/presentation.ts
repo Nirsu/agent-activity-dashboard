@@ -1,7 +1,6 @@
+import type { MemorySource } from './memoryTypes';
+
 export const statusLabels: Record<string, string> = {
-  published: 'Published · export',
-  draft: 'Proposal / scope',
-  observed: 'Observed code',
   difference: 'Suspected difference',
   aligned: 'Observed match',
   insufficient: 'Insufficient evidence',
@@ -16,6 +15,24 @@ export const statusLabels: Record<string, string> = {
   investigate: 'Needs investigation',
 };
 
-export function formatDate(value: string, timeStyle: 'short' | 'medium' = 'short') {
-  return new Date(value).toLocaleString('en-GB', { dateStyle: 'short', timeStyle });
+export function formatDate(value: string) {
+  return new Date(value).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+export function memorySourceStatus(source: MemorySource) {
+  return source.approval === 'draft' && source.currentSourceId && source.status === 'pending'
+    ? 'Awaiting approval'
+    : source.status;
+}
+
+export function memorySourceExplanation(source: MemorySource) {
+  if (source.status === 'ready' || source.approval === 'withdrawn') {
+    return '';
+  }
+  if (source.approval === 'draft' && source.currentSourceId && source.status === 'pending') {
+    return 'Captured for inspection. Approve before indexing and analysis.';
+  }
+  return source.currentSourceId
+    ? 'The latest synchronization is incomplete. The last captured version remains available for inspection.'
+    : 'This source is not available to analyses until capture and indexing succeed.';
 }

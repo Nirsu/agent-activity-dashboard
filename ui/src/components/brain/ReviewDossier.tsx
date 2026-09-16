@@ -7,17 +7,16 @@ export function CitationButton({
   citation,
   sources,
   onOpenSource,
-  missingSourceLabel = 'Source',
 }: {
   citation: Citation;
   sources: BrainSource[];
   onOpenSource: OpenSource;
-  missingSourceLabel?: string;
 }) {
   const sourceTitle =
-    sources.find((source) => source.id === citation.sourceId)?.title ?? missingSourceLabel;
+    sources.find((source) => source.id === citation.sourceId)?.title ?? 'Archived source';
   return (
     <button
+      type="button"
       className="brain-citation"
       onClick={() => onOpenSource(citation.sourceId, citation.line)}
     >
@@ -32,60 +31,44 @@ export function CitationButton({
 export function ReviewDossier({
   finding,
   sources,
-  variant,
-  historical = false,
   reviewAllowed,
   reviewKey,
   disabled,
+  savingReview = false,
   onOpenSource,
   onSaveReview,
 }: {
   finding: Finding;
   sources: BrainSource[];
-  variant: 'analysis' | 'demo';
-  historical?: boolean;
   reviewAllowed: boolean;
   reviewKey: string;
   disabled: boolean;
+  savingReview?: boolean;
   onOpenSource: OpenSource;
   onSaveReview: (decision: string, note: string) => Promise<void>;
 }) {
-  const isDemo = variant === 'demo';
-  const missingSourceLabel = isDemo ? 'Archived source revision' : 'Source';
   return (
-    <article className="brain-dossier">
+    <article className="brain-dossier" id="brain-analysis-dossier" aria-label={finding.title}>
       <div className="brain-section-head">
         <h3>{finding.title}</h3>
         <span className={`brain-badge ${finding.outcome}`}>{statusLabels[finding.outcome]}</span>
       </div>
-      {historical && (
-        <p className="brain-warning">
-          Read-only archive. Sources or rules have changed: run the comparison again to review the
-          current scope.
-        </p>
-      )}
       <p className="brain-explanation">{finding.explanation}</p>
       <div className="brain-evidence-grid">
         <section>
-          <h4>{isDemo ? '01 / What the decision says' : 'What the specification says'}</h4>
+          <h4>What the specification says</h4>
           <CitationButton
             citation={finding.decision}
             sources={sources}
             onOpenSource={onOpenSource}
-            missingSourceLabel={missingSourceLabel}
           />
         </section>
         <section>
-          <h4>{isDemo ? '02 / What the code declares' : 'What the code shows'}</h4>
+          <h4>What the code shows</h4>
           {finding.evidence.length ? (
             finding.evidence.map((citation, index) => (
               <div key={index}>
-                <CitationButton
-                  citation={citation}
-                  sources={sources}
-                  onOpenSource={onOpenSource}
-                  missingSourceLabel={missingSourceLabel}
-                />
+                <CitationButton citation={citation} sources={sources} onOpenSource={onOpenSource} />
               </div>
             ))
           ) : (
@@ -93,19 +76,28 @@ export function ReviewDossier({
           )}
         </section>
       </div>
-      {(isDemo || finding.question) && (
+      {finding.question && (
         <div className="brain-question">
-          <span>THE QUESTION TO RESOLVE</span>
+          <span>
+            {finding.outcome === 'difference' ? 'HUMAN REVIEW QUESTION' : 'ANALYSIS NOTE'}
+          </span>
           <p>{finding.question}</p>
         </div>
       )}
       <p className="brain-limitation">{finding.limitation}</p>
+      {finding.outcome !== 'difference' && (
+        <p className="brain-agents-outcome-note">
+          {finding.outcome === 'aligned'
+            ? 'An observed match is limited to this evidence. It is not a human approval of the project.'
+            : 'Brain cannot conclude from this evidence. Add the missing specification or code, then run another analysis.'}
+        </p>
+      )}
       {reviewAllowed && finding.outcome === 'difference' && (
         <ReviewForm
           key={`${reviewKey}-${finding.id}-${finding.reviews[0]?.id ?? ''}`}
           finding={finding}
-          variant={variant}
           disabled={disabled}
+          saving={savingReview}
           onSave={onSaveReview}
         />
       )}
@@ -115,15 +107,10 @@ export function ReviewDossier({
           {finding.reviews.map((review) => (
             <div key={review.id}>
               <strong>{statusLabels[review.decision] ?? review.decision}</strong>
-              {isDemo ? (
-                <time>{formatDate(review.at, 'medium')}</time>
-              ) : (
-                <small>
-                  {formatDate(review.at)} · {review.actor}
-                </small>
-              )}
+              <small>
+                {formatDate(review.at)} · {review.actor}
+              </small>
               <p>{review.note}</p>
-              {isDemo && <small>{review.actor}</small>}
             </div>
           ))}
         </section>
@@ -134,34 +121,44 @@ export function ReviewDossier({
 
 function ReviewForm({
   finding,
-  variant,
   disabled,
+  saving,
   onSave,
 }: {
   finding: Finding;
-  variant: 'analysis' | 'demo';
   disabled: boolean;
+  saving: boolean;
   onSave: (decision: string, note: string) => Promise<void>;
 }) {
   const [decision, setDecision] = useState('');
   const [note, setNote] = useState('');
-  const isDemo = variant === 'demo';
-  const decisionInputId = isDemo ? `decision-${finding.id}` : 'brain-agent-decision';
-  const noteInputId = isDemo ? `note-${finding.id}` : 'brain-agent-note';
+  const decisionInputId = `decision-${finding.id}`;
+  const noteInputId = `note-${finding.id}`;
+  const decisionDescriptions: Record<string, string> = {
+    confirmed: 'Record that the code should change to match the specification.',
+    documentation:
+      'Record that the specification should be updated to reflect the intended behavior.',
+    false_positive: 'Explain why the reported difference does not apply.',
+    exception: 'Document the accepted deviation and the scope where it is allowed.',
+    investigate: 'Record what still needs to be checked before a decision can be made.',
+  };
   return (
     <form
       className="brain-review-form"
+      aria-busy={saving}
       onSubmit={(event) => {
         event.preventDefault();
         void onSave(decision, note);
       }}
     >
-      <h4>{isDemo && finding.reviews.length ? 'Add to or revise the review' : 'Your review'}</h4>
+      <h4>{finding.reviews.length ? 'Revise your review' : 'Your review'}</h4>
       <label htmlFor={decisionInputId}>Human decision</label>
       <select
         id={decisionInputId}
         required
+        disabled={disabled}
         value={decision}
+        aria-describedby={`${decisionInputId}-help`}
         onChange={(event) => setDecision(event.target.value)}
       >
         <option value="" disabled>
@@ -175,40 +172,35 @@ function ReviewForm({
           ),
         )}
       </select>
+      <p className="brain-agents-help" id={`${decisionInputId}-help`}>
+        {decisionDescriptions[decision] ?? 'Choose how to resolve the suspected difference.'}
+      </p>
       <label htmlFor={noteInputId}>Reason and scope</label>
       <textarea
         id={noteInputId}
         required
+        disabled={disabled}
         minLength={brainConfig.review.minNoteCharacters}
         maxLength={brainConfig.review.maxNoteCharacters}
         rows={3}
         value={note}
+        aria-describedby={`${noteInputId}-help`}
+        placeholder="Explain your decision and which feature or requirement it applies to."
         onChange={(event) => setNote(event.target.value)}
-        placeholder={
-          isDemo
-            ? 'For example: The dashboard is an internal demo tool. SQLite is accepted for this local scope.'
-            : undefined
-        }
       />
+      <small className="brain-agents-help" id={`${noteInputId}-help`}>
+        At least {brainConfig.review.minNoteCharacters} characters. Your reason is preserved with
+        this review.
+      </small>
       <div className="brain-review-form-bottom">
-        <small>
-          {isDemo ? (
-            <>
-              Local session · identity not verified.
-              <br />
-              This review changes neither Notion nor the code.
-            </>
-          ) : (
-            'Session identity · sources are not changed automatically.'
-          )}
-        </small>
+        <small>Saved with your session identity. Source documents stay unchanged.</small>
         <button
           className="brain-button primary"
           disabled={
             disabled || !decision || note.trim().length < brainConfig.review.minNoteCharacters
           }
         >
-          Save review
+          {saving ? 'Saving review…' : 'Save review'}
         </button>
       </div>
     </form>

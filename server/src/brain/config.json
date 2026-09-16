@@ -1,8 +1,7 @@
 {
   "git": {
     "timeoutMs": 15000,
-    "maxBufferBytes": 2000000,
-    "demoMaxBufferBytes": 2097152
+    "maxBufferBytes": 2000000
   },
   "analysis": {
     "defaultRequestTimeoutMs": 300000,
@@ -30,31 +29,57 @@
     "maxGitPathCharacters": 300,
     "maxLocalPathCharacters": 500
   },
-  "demo": {
-    "maxDirectoryDepth": 4,
-    "maxDocuments": 50,
-    "maxDocumentBytes": 250000
-  },
   "memory": {
     "maxRecentRuns": 30,
     "summaryLines": 4,
     "summaryCharacters": 550,
     "maxRecordIdCharacters": 100
   },
-  "search": {
-    "minTermCharacters": 3,
-    "maxQueryCharacters": 300,
-    "maxMatchesPerSource": 3,
-    "maxResults": 12
-  },
   "review": {
     "minNoteCharacters": 8,
-    "maxNoteCharacters": 4000,
-    "maxActivationNoteCharacters": 2000
+    "maxNoteCharacters": 4000
+  },
+  "notionMcp": {
+    "authorizationTimeoutMs": 600000,
+    "requestTimeoutMs": 60000,
+    "refreshSkewMs": 30000,
+    "maxPageCharacters": 250000,
+    "defaultRedirectUrl": "http://127.0.0.1:4318/api/brain/connections/notion/callback"
+  },
+  "synchronization": {
+    "pollIntervalMs": 600000,
+    "reconcileIntervalMs": 3600000,
+    "maxFreshnessMs": 900000,
+    "maxSources": 100,
+    "maxRecentJobs": 50,
+    "webhookMaxBodyBytes": 1000000
+  },
+  "cognee": {
+    "indexRevision": "cognee-1.5.4-v1",
+    "chunksPerBatch": 1,
+    "dataPerBatch": 1,
+    "requestTimeoutMs": 60000,
+    "indexTimeoutMs": 0,
+    "pollIntervalMs": 2000,
+    "topK": 8,
+    "maxResponseBytes": 4000000,
+    "maxGraphNodes": 400,
+    "maxGraphEdges": 1000
+  },
+  "graph": {
+    "layoutIterations": 180,
+    "repulsion": 4000,
+    "springStrength": 0.035,
+    "linkDistance": 150,
+    "gravity": 0.006,
+    "maxStep": 12,
+    "minZoom": 0.5,
+    "maxZoom": 3,
+    "zoomStep": 0.25,
+    "labelCharacters": 36
   },
   "ui": {
-    "pollIntervalMs": 2000,
-    "downloadUrlReleaseDelayMs": 1000
+    "pollIntervalMs": 2000
   },
   "client": {
     "requestTimeoutMs": 15000,

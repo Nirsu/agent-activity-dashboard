@@ -1,6 +1,6 @@
 export type BrainSource = {
   id: string;
-  kind: 'notion' | 'code';
+  kind: 'notion' | 'code' | 'review';
   title: string;
   path: string;
   revision: string;
@@ -11,6 +11,7 @@ export type BrainSource = {
   importedAt: string;
   content?: string;
   url?: string;
+  origin?: { properties: Record<string, unknown>; revision?: string; raw?: string };
 };
 
 export type Citation = { sourceId: string; line: number; quote: string };
@@ -25,6 +26,7 @@ export type Review = {
 };
 export type Finding = {
   id: string;
+  requirementId?: string;
   title: string;
   outcome: 'difference' | 'aligned' | 'insufficient';
   explanation: string;
@@ -46,10 +48,20 @@ export type Project = {
 };
 export type AnalysisRun = {
   id: string;
+  detailVersion?: string;
   projectId: string;
   projectName: string;
   commit?: string;
   baseCommit?: string;
+  feature?: string;
+  retrieval?: {
+    datasets: string[];
+    sourceIds: string[];
+    retrievedAt: string;
+    query: string;
+    memoryVersion: string;
+    contextVersion: string;
+  };
   status: RunStatus;
   stage: string;
   startedAt: string;
@@ -73,53 +85,4 @@ export type AnalysesState = {
   projects: Project[];
   runs: AnalysisRun[];
   activeRunId: string | null;
-};
-
-export type BrainTab = 'memory' | 'rules' | 'review' | 'runs' | 'agents';
-export type DemoRule = {
-  id: string;
-  title: string;
-  topic: string;
-  description: string;
-  scope: string;
-  source: Citation;
-  active: boolean;
-  activationNote?: string;
-  activatedAt?: string;
-  version: string;
-};
-export type DemoFinding = Finding & {
-  ruleId: string;
-  commit: string;
-  current: boolean;
-  createdAt: string;
-};
-export type DemoRun = {
-  id: string;
-  kind: string;
-  status: RunStatus;
-  stage: string;
-  startedAt: string;
-  finishedAt?: string;
-  error?: string;
-  events: RunEvent[];
-};
-export type DemoState = {
-  engine: string;
-  scope: string;
-  repo: string;
-  snapshot?: { importedAt: string; commit: string; excluded: string[] };
-  sources: BrainSource[];
-  rules: DemoRule[];
-  runs: DemoRun[];
-  activeRun: DemoRun | null;
-  findings: DemoFinding[];
-  comparisonReady: boolean;
-};
-export type SearchResult = {
-  sourceId: string;
-  title: string;
-  kind: string;
-  status: string;
-  matches: { line: number; quote: string }[];
 };

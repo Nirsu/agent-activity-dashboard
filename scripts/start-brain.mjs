@@ -53,7 +53,7 @@ try {
   });
   console.log(`Harmony Brain: ${ui.resolvedUrls.local[0]}#brain`);
   console.log(
-    'Local pilot. AI analyses are available after configuring a model. Press Ctrl+C to stop.',
+    'Open Settings to connect Notion and check Cognee, then register project sources in Memory. Press Ctrl+C to stop.',
   );
   process.on('SIGINT', () => void stop());
   process.on('SIGTERM', () => void stop());

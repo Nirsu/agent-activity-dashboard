@@ -1,8 +1,8 @@
 import { brainConfig } from '../config.js';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { lstat, readFile } from 'node:fs/promises';
-import { dirname, relative, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { makeSource } from '../sources.js';
 import type { AnalysisRun, Project } from './types.js';
@@ -47,21 +47,15 @@ export async function readProjects(projectsPath: string): Promise<Project[]> {
       fail('Invalid project ID.');
     }
 
-    const specs = requireList(project.specs, brainConfig.projects.maxSpecifications).map(
+    const specs = requireList(project.specs ?? [], brainConfig.projects.maxSpecifications).map(
       (value) => {
         const specification = requireObject(value);
-        if (specification.kind !== 'notion' && specification.kind !== 'git') {
-          fail('Invalid specification type.');
+        if (specification.kind !== 'git') {
+          fail('Project specifications must use Git paths. Register Notion pages in Brain Memory.');
         }
         return {
-          kind: specification.kind as 'notion' | 'git',
-          path:
-            specification.kind === 'git'
-              ? requireRepoPath(specification.path)
-              : resolve(
-                  root,
-                  requireText(specification.path, brainConfig.projects.maxLocalPathCharacters),
-                ),
+          kind: 'git' as const,
+          path: requireRepoPath(specification.path),
         };
       },
     );
@@ -69,8 +63,8 @@ export async function readProjects(projectsPath: string): Promise<Project[]> {
     const codePaths = requireList(project.codePaths, brainConfig.projects.maxCodePaths).map(
       requireRepoPath,
     );
-    if (specs.length === 0 || codePaths.length === 0) {
-      fail('Each project must define its specifications and code paths.');
+    if (codePaths.length === 0) {
+      fail('Each project must define its allowed code paths.');
     }
 
     // Keep this field order stable: the serialized configuration versions saved runs.
@@ -107,11 +101,7 @@ async function runGit(project: Project, args: string[]): Promise<string> {
   return stdout;
 }
 
-export async function captureProjectSources(
-  run: AnalysisRun,
-  project: Project,
-  projectsPath: string,
-) {
+export async function captureProjectSources(run: AnalysisRun, project: Project) {
   run.commit = (
     await runGit(project, ['rev-parse', '--verify', `${run.commit ?? 'HEAD'}^{commit}`])
   ).trim();
@@ -144,21 +134,22 @@ export async function captureProjectSources(
     run.changedFiles = changedFiles.split('\0').filter(Boolean);
   }
 
-  let capturedBytes = 0;
-  function addSource(kind: 'notion' | 'code', path: string, raw: string, isSpecification: boolean) {
-    capturedBytes += Buffer.byteLength(raw);
+  let capturedCodeBytes = 0;
+  function addSource(path: string, raw: string, isSpecification: boolean) {
+    const sourceBytes = Buffer.byteLength(raw);
+    if (!isSpecification) {
+      capturedCodeBytes += sourceBytes;
+    }
     if (
-      capturedBytes > brainConfig.analysis.maxSourceBytes ||
+      sourceBytes > brainConfig.analysis.maxSourceBytes ||
+      capturedCodeBytes > brainConfig.analysis.maxSourceBytes ||
       raw.includes('\0') ||
       run.sources.length >= brainConfig.analysis.maxSources
     ) {
       fail('Scope is too large or contains a binary file: narrow the paths before analysis.');
     }
 
-    const source = makeSource(kind, path, raw, kind === 'code' ? run.commit : undefined);
-    if (isSpecification && kind === 'notion' && source.status !== 'published') {
-      fail('A Notion specification is not marked “Statut: Publié” in its export.');
-    }
+    const source = makeSource('code', path, raw, run.commit);
 
     source.id = createHash('sha256')
       .update(`${project.id}:${isSpecification ? 'spec' : 'code'}:${source.id}`)
@@ -169,21 +160,11 @@ export async function captureProjectSources(
   }
 
   for (const specification of project.specs) {
-    if (specification.kind === 'git') {
-      if (!files.includes(specification.path)) {
-        fail('Git specification is missing from the commit or is a symbolic link.');
-      }
-      const content = await runGit(project, ['show', `${run.commit}:${specification.path}`]);
-      addSource('code', specification.path, content, true);
-    } else {
-      const info = await lstat(specification.path);
-      if (info.size > brainConfig.analysis.maxSourceBytes || !info.isFile()) {
-        fail('Notion export is too large or is a symbolic link.');
-      }
-      const path = relative(dirname(projectsPath), specification.path).replace(/\\/g, '/');
-      const content = await readFile(specification.path, 'utf8');
-      addSource('notion', path, content, true);
+    if (!files.includes(specification.path)) {
+      fail('Git specification is missing from the commit or is a symbolic link.');
     }
+    const content = await runGit(project, ['show', `${run.commit}:${specification.path}`]);
+    addSource(specification.path, content, true);
   }
 
   const selectedFiles = files.filter((path) => {
@@ -202,6 +183,6 @@ export async function captureProjectSources(
   }
   for (const path of selectedFiles) {
     const content = await runGit(project, ['show', `${run.commit}:${path}`]);
-    addSource('code', path, content, false);
+    addSource(path, content, false);
   }
 }

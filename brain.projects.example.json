@@ -2,9 +2,9 @@
   {
     "id": "dashboard",
     "name": "Dashboard — safe hook summaries",
-    "scope": "Check one feature only: lifecycle hooks send sanitized tool summaries instead of raw commands, tool arguments, or tool output. Extract only the README requirements about this feature, then trace safeToolSummary and the outbound /activity payload in hooks/hook.js. Exclude OpenTelemetry collection, server storage, retention, deployment, UI, and other products. This analysis does not establish overall privacy compliance.",
+    "scope": "Check one feature only: lifecycle hooks send sanitized tool summaries instead of raw commands, tool arguments, or tool output. Use the approved dashboard and shared specifications registered in Brain Memory, then trace safeToolSummary and the outbound /activity payload in hooks/hook.js. Exclude OpenTelemetry collection, server storage, retention, deployment, UI, and other products. This analysis does not establish overall privacy compliance.",
     "repoPath": ".",
-    "specs": [{ "kind": "git", "path": "README.md" }],
+    "specs": [],
     "codePaths": ["hooks/hook.js"]
   }
 ]

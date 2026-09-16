@@ -1,0 +1,47 @@
+name: harmony-brain
+
+services:
+  cognee:
+    image: cognee/cognee:1.5.4@sha256:68b755bebae2a19f482069b5efcbe8e4bdf717a68f6afb6fef80c3c352c37015
+    ports:
+      - '127.0.0.1:${COGNEE_PORT:-8000}:8000'
+    environment:
+      ENABLE_BACKEND_ACCESS_CONTROL: 'true'
+      REQUIRE_AUTHENTICATION: 'true'
+      DEFAULT_USER_EMAIL: ${COGNEE_USERNAME:-brain@example.com}
+      DEFAULT_USER_PASSWORD: ${COGNEE_PASSWORD:?set COGNEE_PASSWORD in .env}
+      FASTAPI_USERS_JWT_SECRET: ${COGNEE_JWT_SECRET:?set COGNEE_JWT_SECRET in .env}
+      LLM_PROVIDER: openai
+      LLM_MODEL: ${COGNEE_LLM_MODEL:-openai/${BRAIN_MODEL:-gpt-5.6-luna}}
+      LLM_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      EMBEDDING_PROVIDER: openai
+      EMBEDDING_MODEL: ${COGNEE_EMBEDDING_MODEL:-openai/text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${COGNEE_EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      SYSTEM_ROOT_DIRECTORY: /cognee-storage/system
+      DATA_ROOT_DIRECTORY: /cognee-storage/data
+      DB_PROVIDER: sqlite
+      GRAPH_DATABASE_PROVIDER: kuzu
+      GRAPH_DATASET_DATABASE_HANDLER: kuzu
+      VECTOR_DB_PROVIDER: lancedb
+      VECTOR_DATASET_DATABASE_HANDLER: lancedb
+      DATASET_QUEUE_MAX_CONCURRENT: '1'
+      DATABASE_MAX_LRU_CACHE_SIZE: '1'
+      TELEMETRY_DISABLED: '1'
+      CACHING: 'false'
+    volumes:
+      - cognee-system:/cognee-storage/system
+      - cognee-data:/cognee-storage/data
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--silent', 'http://localhost:8000/health']
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+    cpus: ${COGNEE_CPUS:-2}
+    mem_limit: ${COGNEE_MEMORY_LIMIT:-4g}
+    restart: unless-stopped
+
+volumes:
+  cognee-system:
+  cognee-data:

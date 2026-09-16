@@ -13,6 +13,7 @@ import { history } from './db.js';
 import { cachedTitle, isTicketKey, resolveTitle } from './jira.js';
 import { DeliveryService, type DeliverySettingsInput } from './delivery.js';
 import { registerBrain } from './brain.js';
+import { isBrainCallback } from './brain/access.js';
 import type { ActivitySubtype, AgentEvent } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -79,7 +80,15 @@ async function ensureHistoryInit(): Promise<void> {
 }
 
 export async function buildApp(options: { deliveryService?: DeliveryService } = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' }, bodyLimit: 16 * 1024 * 1024 });
+  const app = Fastify({ logger: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    redact: ['req.headers.authorization', 'req.headers.x-aad-token', 'req.headers.x-brain-admin-token'],
+    serializers: {
+      req(request) {
+        return { method: request.method, url: request.url?.split('?')[0], remoteAddress: request.ip };
+      },
+    },
+  }, bodyLimit: 16 * 1024 * 1024 });
   const store = new Store();
   const delivery = options.deliveryService ?? new DeliveryService({ logger: app.log });
 
@@ -137,7 +146,7 @@ export async function buildApp(options: { deliveryService?: DeliveryService } = 
       reply.header('Vary', 'Origin');
     }
     reply.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    reply.header('Access-Control-Allow-Headers', 'content-type,content-encoding,authorization,x-aad-token');
+    reply.header('Access-Control-Allow-Headers', 'content-type,content-encoding,authorization,x-aad-token,x-brain-admin-token');
     if (req.method === 'OPTIONS') {
       return originAllowed
         ? reply.code(204).send()
@@ -155,6 +164,9 @@ export async function buildApp(options: { deliveryService?: DeliveryService } = 
   const ingestRoutes = new Set(['/v1/logs', '/v1/metrics', '/v1/traces', '/activity']);
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0];
+    if (isBrainCallback(req)) {
+      return;
+    }
     const isIngest = ingestRoutes.has(path);
     const isViewer = path.startsWith('/api/') || path === '/live';
     const required = isIngest ? config.ingestToken : isViewer ? config.viewerToken : undefined;

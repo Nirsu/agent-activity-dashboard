@@ -14,16 +14,21 @@
   "scripts": {
     "dev:server": "npm run dev --workspace server",
     "dev:ui": "npm run dev --workspace ui",
-    "brain": "node scripts/start-brain-demo.mjs",
+    "brain": "node scripts/start-brain.mjs",
     "brain:check": "node scripts/brain-check.mjs",
     "build": "npm run build --workspace server && npm run build --workspace ui",
-    "test": "npm run test --workspace server",
+    "test": "npm run test --workspace server && npm run build --workspace ui && npm run test:brain-ui && npm run test:brain-launcher",
+    "test:brain-ui": "tsx --tsconfig ui/tsconfig.json --test scripts/brain-reader.test.tsx scripts/brain-graph.test.ts scripts/brain-memory-ui.test.tsx scripts/brain-analysis-ui.test.tsx scripts/brain-analysis-polling.test.tsx",
     "test:brain-reader": "tsx --tsconfig ui/tsconfig.json --test scripts/brain-reader.test.tsx",
     "test:brain-launcher": "node --test scripts/brain-launcher.test.mjs",
-    "format:brain": "prettier --write \"server/src/brain*.ts\" \"server/src/brain/**/*.ts\" \"ui/src/components/Brain*.*\" \"ui/src/components/brain/**/*.{ts,tsx,css}\" \"scripts/brain-*.*\" scripts/start-brain-demo.mjs ui/src/App.tsx \"server/prompts/*.md\" BRAIN-AGENTS.md DEMO-BRAIN.md AGENTS.md server/src/brain/config.json package.json .prettierrc.json",
-    "format:brain:check": "prettier --check \"server/src/brain*.ts\" \"server/src/brain/**/*.ts\" \"ui/src/components/Brain*.*\" \"ui/src/components/brain/**/*.{ts,tsx,css}\" \"scripts/brain-*.*\" scripts/start-brain-demo.mjs ui/src/App.tsx \"server/prompts/*.md\" BRAIN-AGENTS.md DEMO-BRAIN.md AGENTS.md server/src/brain/config.json package.json .prettierrc.json",
+    "format:brain": "prettier --write \"server/src/brain*.ts\" \"server/src/brain/**/*.ts\" \"ui/src/components/Brain*.*\" \"ui/src/components/brain/**/*.{ts,tsx,css}\" \"scripts/brain-*.*\" scripts/start-brain.mjs ui/src/App.tsx \"server/prompts/*.md\" BRAIN-AGENTS.md COGNEE.md BRAIN-NOTION-COGNEE-PLAN.md AGENTS.md server/src/brain/config.json package.json .prettierrc.json NOTION-MCP.md",
+    "format:brain:check": "prettier --check \"server/src/brain*.ts\" \"server/src/brain/**/*.ts\" \"ui/src/components/Brain*.*\" \"ui/src/components/brain/**/*.{ts,tsx,css}\" \"scripts/brain-*.*\" scripts/start-brain.mjs ui/src/App.tsx \"server/prompts/*.md\" BRAIN-AGENTS.md COGNEE.md BRAIN-NOTION-COGNEE-PLAN.md AGENTS.md server/src/brain/config.json package.json .prettierrc.json NOTION-MCP.md",
     "demo:seed": "node scripts/seed-demo.mjs",
-    "start": "npm run start --workspace server"
+    "start": "npm run start --workspace server",
+    "test:brain-notion": "npm run build --workspace server && node --test server/dist/brain-notion.test.js",
+    "test:brain-graph": "tsx --tsconfig ui/tsconfig.json --test scripts/brain-graph.test.ts",
+    "test:brain-memory-ui": "tsx --tsconfig ui/tsconfig.json --test scripts/brain-memory-ui.test.tsx",
+    "test:brain-analysis-ui": "tsx --tsconfig ui/tsconfig.json --test scripts/brain-analysis-ui.test.tsx"
   },
   "devDependencies": {
     "prettier": "^3.9.7"

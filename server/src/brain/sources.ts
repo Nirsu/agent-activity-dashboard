@@ -3,15 +3,9 @@ import { createHash } from 'node:crypto';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
-export const normalizeText = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-
 export type Source = {
   id: string;
-  kind: 'notion' | 'code';
+  kind: 'notion' | 'code' | 'review';
   title: string;
   path: string;
   revision: string;
@@ -22,26 +16,12 @@ export type Source = {
   lines: number;
   importedAt: string;
   url?: string;
+  origin?: { properties: Record<string, unknown>; revision?: string; raw?: string };
 };
 
-function sourceTopic(kind: Source['kind'], title: string, path: string) {
-  if (kind === 'notion') {
-    return normalizeText(title).includes('socle') ? 'Architecture & foundations' : 'Harmony Brain';
-  }
-  if (path.startsWith('ui/')) {
-    return 'Web extranet';
-  }
-  return /db\.ts|compose/.test(path) ? 'Storage & runtime' : 'Backend & tooling';
-}
-
-export function makeSource(
-  kind: Source['kind'],
-  path: string,
-  raw: string,
-  commit?: string,
-): Source {
+export function minimizeSourceContent(raw: string): string {
   // Line-preserving minimization for the local pilot. This is not a general secret scanner.
-  const content = raw
+  return raw
     .replace(/\r\n/g, '\n')
     .replace(/^(Owner|Porteur):.*$/gm, '$1: [not indexed]')
     .replace(/\b(?:sk-[a-zA-Z0-9_-]{20,}|gh[pousr]_[a-zA-Z0-9]{20,})\b/g, '[secret redacted]')
@@ -51,10 +31,17 @@ export function makeSource(
         .map(() => '[secret redacted]')
         .join('\n'),
     );
+}
+
+export function makeSource(
+  kind: Source['kind'],
+  path: string,
+  raw: string,
+  commit?: string,
+): Source {
+  const content = minimizeSourceContent(raw);
   const title = kind === 'notion' ? (content.match(/^# (.+)$/m)?.[1] ?? path) : path;
-  const isPublished = /^Statut:\s*Publié\s*$/m.test(content);
-  const status: Source['status'] =
-    kind === 'code' ? 'observed' : isPublished ? 'published' : 'draft';
+  const status: Source['status'] = kind === 'code' ? 'observed' : 'draft';
   const revision = commit ?? hash(content);
   const extracts = content
     .split('\n')
@@ -68,7 +55,7 @@ export function makeSource(
     path,
     revision,
     status,
-    topic: sourceTopic(kind, title, path),
+    topic: '',
     summary:
       kind === 'code' && path.endsWith('package.json')
         ? manifestSummary(content)

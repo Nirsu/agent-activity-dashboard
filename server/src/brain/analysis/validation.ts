@@ -1,5 +1,6 @@
 import { brainConfig } from '../config.js';
 import type { Source } from '../sources.js';
+import type { SourceExcerpt } from '../memory/types.js';
 import type { ArbitrationDossier, Citation, ComparisonCheck, Requirement } from './types.js';
 
 export const reviewDecisions = [
@@ -41,7 +42,7 @@ export function requireList(
   return value;
 }
 
-function parseCitation(value: unknown, sources: Source[]): Citation {
+function parseCitation(value: unknown, sources: Source[], excerpts?: SourceExcerpt[]): Citation {
   const citation = requireObject(value);
   const sourceId = requireText(citation.sourceId, brainConfig.memory.maxRecordIdCharacters);
   const quote = requireText(citation.quote, brainConfig.analysis.maxQuoteCharacters);
@@ -54,6 +55,17 @@ function parseCitation(value: unknown, sources: Source[]): Citation {
     source?.content.split('\n')[(line as number) - 1] !== quote
   ) {
     fail('Citation rejected: incorrect source, line number, or quote.');
+  }
+  if (
+    excerpts &&
+    !excerpts.some(
+      (excerpt) =>
+        excerpt.sourceId === sourceId &&
+        (line as number) >= excerpt.startLine &&
+        (line as number) <= excerpt.endLine,
+    )
+  ) {
+    fail('Citation rejected: the line was not included in the retrieved excerpts.');
   }
 
   return { sourceId, line: line as number, quote };
@@ -77,14 +89,18 @@ function requireExactRequirementIds(
   }
 }
 
-export function parseRequirements(value: unknown, specifications: Source[]): Requirement[] {
+export function parseRequirements(
+  value: unknown,
+  specifications: Source[],
+  excerpts?: SourceExcerpt[],
+): Requirement[] {
   const requirements = requireList(value).map((value) => {
     const requirement = requireObject(value);
     return {
       id: requireText(requirement.id, brainConfig.analysis.maxRequirementIdCharacters),
       statement: requireText(requirement.statement),
       scope: requireText(requirement.scope),
-      citation: parseCitation(requirement.citation, specifications),
+      citation: parseCitation(requirement.citation, specifications, excerpts),
     };
   });
 

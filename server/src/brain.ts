@@ -1,121 +1,72 @@
-import { brainConfig } from './brain/config.js';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { config } from './config.js';
 import { BrainAgents, registerBrainAgents } from './brain-agents.js';
-import { BrainService } from './brain/demo/service.js';
-import { decisions } from './brain/demo/types.js';
+import { brainConfig } from './brain/config.js';
+import { requireBrainAdmin, isBrainCallback } from './brain/access.js';
+import { CogneeClient } from './brain/cognee/client.js';
+import { NotionConnection } from './brain/notion/service.js';
+import { registerNotionRoutes } from './brain/notion/routes.js';
+import { MemoryService } from './brain/memory/service.js';
+import { registerMemoryRoutes } from './brain/memory/routes.js';
+import { registerMemoryWebhooks } from './brain/memory/webhooks.js';
+import { registerMemoryGraph } from './brain/graph.js';
 
-export { BrainService };
 export { makeSource, type Source } from './brain/sources.js';
-export type { Finding } from './brain/demo/types.js';
 
-const fail = (message: string, statusCode = 400): never => {
-  throw Object.assign(new Error(message), { statusCode });
-};
-
-export async function registerBrain(app: FastifyInstance, service = new BrainService()) {
-  await service.init();
-  app.addHook('onClose', async () => {
-    await service.close();
+export async function registerBrain(app: FastifyInstance) {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  const dbPath = process.env.BRAIN_DB_PATH ?? resolve(config.dataDir, 'brain.db');
+  const projectsPath = process.env.BRAIN_PROJECTS_PATH ?? resolve(root, 'brain.projects.json');
+  const notion = new NotionConnection();
+  const cognee = new CogneeClient();
+  const memory = new MemoryService({
+    dbPath,
+    projectsPath,
+    notion,
+    cognee,
+    syncMode: process.env.BRAIN_SYNC_MODE === 'webhook' ? 'webhook' : 'poll',
   });
-  // Brain contains source text and mutations: accept only same-origin or the explicit local dev UI.
-  app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith('/api/brain')) {
+  await notion.init();
+  await memory.init();
+  app.addHook('onClose', () => memory.close());
+  app.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/api/brain') || isBrainCallback(request)) {
       return;
     }
     if (!config.viewerToken) {
-      const localAddress = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip);
-      const localHost = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
+      const localAddress = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip);
+      const localHost = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(
+        request.headers.host ?? '',
+      );
       if (!localAddress || !localHost) {
         return reply
           .code(403)
           .send({ error: 'Unauthenticated Brain access is restricted to the local machine.' });
       }
     }
-    if (req.headers.origin) {
+    if (request.headers.origin) {
       const allowed = new Set([
-        `http://${req.headers.host}`,
-        `https://${req.headers.host}`,
+        `http://${request.headers.host}`,
+        `https://${request.headers.host}`,
         `http://localhost:${brainConfig.launcher.defaultUiPort}`,
         `http://127.0.0.1:${brainConfig.launcher.defaultUiPort}`,
       ]);
-      if (!allowed.has(req.headers.origin)) {
+      if (!allowed.has(request.headers.origin)) {
         return reply.code(403).send({ error: 'origin not allowed' });
       }
     }
   });
-  app.get('/api/brain', async () => service.state());
-  await registerBrainAgents(app, new BrainAgents({ dbPath: service.options.dbPath }));
-  app.get<{ Params: { id: string } }>('/api/brain/sources/:id', async (req) =>
-    service.source(req.params.id),
-  );
-  app.get<{ Querystring: { q?: string } }>('/api/brain/search', async (req) => {
-    if (
-      typeof req.query.q !== 'string' ||
-      req.query.q.length > brainConfig.search.maxQueryCharacters
-    ) {
-      return fail(`Invalid search (maximum ${brainConfig.search.maxQueryCharacters} characters).`);
-    }
-    return { results: service.search(req.query.q) };
+  await registerNotionRoutes(app, notion, requireBrainAdmin);
+  registerMemoryRoutes(app, memory, requireBrainAdmin);
+  await registerMemoryWebhooks(app, memory);
+  const agents = new BrainAgents({ dbPath, projectsPath, memory });
+  await registerBrainAgents(app, agents);
+  registerMemoryGraph(app, memory, agents);
+  // Fastify closes hooks in reverse order. Abort upstream work before waiting for analyses.
+  app.addHook('onClose', async () => {
+    cognee.close();
+    await notion.close();
   });
-  app.post<{ Body: { kind: 'import' | 'compare' } }>(
-    '/api/brain/runs',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['kind'],
-          additionalProperties: false,
-          properties: { kind: { type: 'string', enum: ['import', 'compare'] } },
-        },
-      },
-    },
-    async (req, reply) => reply.code(202).send(service.start(req.body.kind)),
-  );
-  app.put<{ Params: { id: string }; Body: { active: boolean; note: string } }>(
-    '/api/brain/rules/:id',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['active', 'note'],
-          additionalProperties: false,
-          properties: {
-            active: { type: 'boolean' },
-            note: { type: 'string', maxLength: brainConfig.review.maxActivationNoteCharacters },
-          },
-        },
-      },
-    },
-    async (req) => service.activate(req.params.id, req.body.active, req.body.note),
-  );
-  app.post<{
-    Params: { id: string };
-    Body: { decision: string; note: string; expectedReviewId?: string };
-  }>(
-    '/api/brain/findings/:id/reviews',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['decision', 'note'],
-          additionalProperties: false,
-          properties: {
-            decision: { type: 'string', enum: [...decisions] },
-            note: {
-              type: 'string',
-              minLength: brainConfig.review.minNoteCharacters,
-              maxLength: brainConfig.review.maxNoteCharacters,
-            },
-            expectedReviewId: {
-              type: 'string',
-              maxLength: brainConfig.memory.maxRecordIdCharacters,
-            },
-          },
-        },
-      },
-    },
-    async (req) =>
-      service.review(req.params.id, req.body.decision, req.body.note, req.body.expectedReviewId),
-  );
 }

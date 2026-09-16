@@ -1,4 +1,6 @@
 import type { Source } from '../sources.js';
+import type { MemoryService } from '../memory/service.js';
+import type { RetrievedEvidence } from '../memory/types.js';
 
 export type Project = {
   id: string;
@@ -6,7 +8,7 @@ export type Project = {
   scope: string;
   repoPath: string;
   codePaths: string[];
-  specs: { kind: 'notion' | 'git'; path: string }[];
+  specs: { kind: 'git'; path: string }[];
 };
 
 export type Citation = {
@@ -46,6 +48,7 @@ export type HumanReview = {
 
 export type Finding = {
   id: string;
+  requirementId?: string;
   title: string;
   outcome: ComparisonCheck['outcome'];
   explanation: string;
@@ -64,6 +67,8 @@ export type AnalysisRun = {
   projectVersion: string;
   commit?: string;
   baseCommit?: string;
+  feature?: string;
+  retrieval?: Omit<RetrievedEvidence, 'sources'>;
   requestTimeoutMs?: number;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
   stage: string;
@@ -104,4 +109,5 @@ export type BrainAgentsOptions = {
   apiKey?: string;
   requestTimeoutMs?: number;
   call?: ModelCall;
+  memory?: Pick<MemoryService, 'retrieve' | 'version' | 'contextVersion' | 'recordReview'>;
 };

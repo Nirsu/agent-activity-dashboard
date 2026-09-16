@@ -1,309 +1,354 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, rm, rename } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import Fastify from 'fastify';
 import Sqlite from 'better-sqlite3';
-import { BrainService, registerBrain } from './brain.js';
+import { MemoryService } from './brain/memory/service.js';
+import { makeCapture } from './brain/memory/capture.js';
+import type { SourceRegistration } from './brain/memory/types.js';
+import type { CogneeClient } from './brain/cognee/client.js';
+import type { Project } from './brain/analysis/types.js';
 
-const exec = promisify(execFile);
-const doctrine =
-  '# Socle technique cible\nStatut: Publié\n\n| BFF | NestJS |\n| Base de données | PostgreSQL |\n| Extranet web | React avec Vite |\n';
-
-test('Brain: real Git snapshot, rule activation, evidence, durable arbitration and failed refresh', async () => {
-  const root = await mkdtemp(resolve(tmpdir(), 'brain-pilot-'));
-  const repoPath = resolve(root, 'repo');
-  const notionPath = resolve(root, 'notion');
-  const dbPath = resolve(root, 'brain.db');
-  await mkdir(resolve(repoPath, 'server'), { recursive: true });
-  await mkdir(resolve(repoPath, 'ui'), { recursive: true });
-  await mkdir(notionPath);
-  const git = async (...args: string[]) =>
-    exec('git', ['-C', repoPath, ...args], { windowsHide: true });
-  await git('init');
-  await writeFile(
-    resolve(repoPath, 'server/package.json'),
-    JSON.stringify({ dependencies: { fastify: '5', 'better-sqlite3': '11' } }, null, 2),
-  );
-  await writeFile(
-    resolve(repoPath, 'ui/package.json'),
-    JSON.stringify({ dependencies: { react: '18' }, devDependencies: { vite: '6' } }, null, 2),
-  );
-  await git('add', '.');
-  await git(
-    '-c',
-    'user.name=Test',
-    '-c',
-    'user.email=test@example.invalid',
-    'commit',
-    '-m',
-    'fixture',
-  );
-  await writeFile(resolve(notionPath, 'socle.md'), doctrine);
-  await writeFile(
-    resolve(notionPath, 'draft.md'),
-    '# Plan non arbitré\nStatut: À rédiger\nUtiliser MongoDB.\n',
-  );
-  for (const folder of ['equipe-a', 'equipe-b']) {
-    await mkdir(resolve(notionPath, folder));
-    await writeFile(
-      resolve(notionPath, folder, 'notes.md'),
-      '# Notes\nStatut: Brouillon\nÀ préciser.\n',
-    );
-  }
-  const options = { repoPath, notionPath, dbPath };
-  let brain = new BrainService(options);
-  await brain.init();
-  try {
-    brain.start('import');
-    assert.throws(() => brain.start('import'), /already running/);
-    await brain.wait();
-    let state = brain.state();
-    assert.equal(state.runs[0].status, 'succeeded');
-    assert.equal(state.sources.length, 6);
-    assert.equal(new Set(state.sources.map((s) => s.id)).size, 6);
-    assert.deepEqual(
-      state.sources
-        .filter((s) => s.title === 'Notes')
-        .map((s) => s.path)
-        .sort(),
-      ['equipe-a/notes.md', 'equipe-b/notes.md'],
-    );
-    assert.equal(state.rules.length, 3);
-    assert.equal(state.rules.filter((r) => r.active).length, 0);
-    assert.equal(state.sources.find((s) => s.title === 'Plan non arbitré')?.status, 'draft');
-    assert.ok(brain.search('PostgreSQL')[0].matches[0].quote.includes('PostgreSQL'));
-    const firstCommit = state.snapshot!.commit;
-    // Working tree changes must not be mistaken for the imported commit.
-    await writeFile(
-      resolve(repoPath, 'server/package.json'),
-      '{"dependencies":{"@nestjs/core":"11"}}',
-    );
-    for (const rule of state.rules) {
-      brain.activate(rule.id, true, 'Test scope explicitly accepted.');
-    }
-    brain.start('compare');
-    await brain.wait();
-    state = brain.state();
-    assert.deepEqual(state.findings.map((f) => f.outcome).sort(), [
-      'aligned',
-      'difference',
-      'difference',
-    ]);
-    for (const finding of state.findings) {
-      for (const c of [finding.decision, ...finding.evidence]) {
-        assert.equal(brain.source(c.sourceId).content.split('\n')[c.line - 1], c.quote);
+async function fixture() {
+  const root = await mkdtemp(resolve(tmpdir(), 'brain-memory-'));
+  const projectsPath = resolve(root, 'projects.json');
+  const projects: Project[] = ['dashboard', 'mobile'].map((id) => ({
+    id,
+    name: id,
+    scope: 'Selected feature',
+    repoPath: root,
+    specs: [],
+    codePaths: ['feature.ts'],
+  }));
+  await writeFile(projectsPath, JSON.stringify(projects));
+  const pages = new Map<string, string>();
+  const indexed = new Map<string, string>();
+  const indexCalls: string[] = [];
+  const searched: string[][] = [];
+  let failIndex = false;
+  let invalidHit = false;
+  const cognee: Pick<CogneeClient, 'status' | 'index' | 'search' | 'graph'> = {
+    async status() {
+      return { configured: true, available: true };
+    },
+    async index(source, name) {
+      indexCalls.push(name);
+      if (failIndex) {
+        throw new Error('Simulated indexing failure');
       }
-    }
-    const finding = state.findings.find((f) => f.outcome === 'difference')!;
-    const rule = state.rules.find((r) => r.id === finding.ruleId)!;
-    brain.activate(rule.id, false, 'Scope needs review.');
-    assert.equal(brain.state().comparisonReady, false);
-    assert.equal(
-      brain.state().findings.some((f) => f.current),
-      false,
-    );
-    assert.throws(
-      () => brain.review(finding.id, 'confirmed', 'This finding belongs to the previous scope.'),
-      /Historical/,
-    );
-    brain.activate(rule.id, true, 'Test scope explicitly accepted.');
-    assert.equal(brain.state().comparisonReady, true);
-    const review = brain.review(finding.id, 'exception', 'Scope exception for the local pilot.');
-    assert.throws(
-      () => brain.review(finding.id, 'confirmed', 'Another concurrent decision.'),
-      /changed/,
-    );
-    assert.throws(() => brain.review(finding.id, 'invalid', 'Detailed justification.'), /Invalid/);
-    brain.start('compare');
-    await brain.wait();
-    assert.equal(brain.state().findings.length, 3);
-    assert.equal(brain.state().findings.find((f) => f.id === finding.id)!.reviews[0].id, review.id);
-    await brain.close();
-    brain = new BrainService(options);
-    await brain.init();
-    assert.equal(
-      brain.state().findings.find((f) => f.id === finding.id)!.reviews[0].note,
-      review.note,
-    );
-    await rename(notionPath, `${notionPath}-moved`);
-    brain.start('import');
-    await brain.wait();
-    assert.equal(brain.state().runs[0].status, 'failed');
-    assert.equal(brain.state().snapshot!.commit, firstCommit);
-    assert.equal(
-      brain.state().findings.find((f) => f.id === finding.id)!.reviews[0].decision,
-      'exception',
-    );
-    await rename(`${notionPath}-moved`, notionPath);
-    await writeFile(resolve(repoPath, 'server/package.json'), 'invalid json');
-    await git('add', '.');
-    await git(
-      '-c',
-      'user.name=Test',
-      '-c',
-      'user.email=test@example.invalid',
-      'commit',
-      '-m',
-      'invalid manifest',
-    );
-    brain.start('import');
-    await brain.wait();
-    brain.start('compare');
-    await brain.wait();
-    state = brain.state();
-    assert.equal(state.findings.filter((f) => f.current && f.outcome === 'insufficient').length, 2);
-    assert.equal(state.findings.find((f) => f.id === finding.id)!.current, false);
-    assert.throws(
-      () =>
-        brain.review(finding.id, 'confirmed', 'Previous commit has now been replaced.', review.id),
-      /Historical/,
-    );
-    assert.equal(state.findings.find((f) => f.id === finding.id)!.reviews[0].decision, 'exception');
-    await rename(resolve(notionPath, 'socle.md'), resolve(notionPath, 'equipe-a/socle.md'));
-    brain.start('import');
-    await brain.wait();
-    assert.equal(brain.state().rules.length, 3);
-    assert.ok(
-      brain
-        .state()
-        .rules.every(
-          (r) => !r.active && brain.source(r.source.sourceId).path === 'equipe-a/socle.md',
-        ),
-    );
-    assert.equal(brain.state().findings.find((f) => f.id === finding.id)!.reviews[0].id, review.id);
-    for (const rule of brain.state().rules) {
-      brain.activate(rule.id, true, 'Source moved and scope revalidated.');
-    }
-    brain.start('compare');
-    await brain.wait();
-    assert.ok(
-      brain
-        .state()
-        .findings.filter((f) => f.current)
-        .every((f) => brain.source(f.decision.sourceId).path === 'equipe-a/socle.md'),
-    );
-    assert.equal(brain.state().findings.find((f) => f.id === finding.id)!.reviews[0].id, review.id);
-    await writeFile(
-      resolve(notionPath, 'equipe-a/socle.md'),
-      doctrine.replace('Statut: Publié', 'Statut: Brouillon'),
-    );
-    brain.start('import');
-    await brain.wait();
-    assert.equal(brain.state().rules.length, 0);
-    assert.throws(
-      () => brain.activate(state.rules[0].id, true, 'Previous document revision.'),
-      /replaced/,
-    );
+      indexed.set(name, source.content);
+      return { datasetId: name };
+    },
+    async search(_query, datasets) {
+      searched.push(datasets);
+      return datasets.map((datasetId) => ({
+        datasetId: invalidHit ? 'unrelated-dataset' : datasetId,
+        chunkId: datasetId,
+        text: indexed.get(datasetId)!,
+      }));
+    },
+    async graph() {
+      return { nodes: [], edges: [], truncated: false };
+    },
+  };
+  const options = {
+    dbPath: resolve(root, 'brain.db'),
+    projectsPath,
+    schedule: false,
+    cognee,
+    notion: {
+      state() {
+        return { configured: true, connected: true, status: 'connected' as const };
+      },
+      async fetchPage(pageId: string) {
+        if (!pages.has(pageId)) {
+          throw new Error('Page unavailable');
+        }
+        return {
+          pageId,
+          title: pageId,
+          content: pages.get(pageId)!,
+          url: 'https://www.notion.so/' + pageId,
+          properties: { title: pageId },
+          raw: '',
+        };
+      },
+    },
+  };
+  let service = new MemoryService(options);
+  await service.init();
+  return {
+    root,
+    projects,
+    pages,
+    indexed,
+    indexCalls,
+    searched,
+    get service() {
+      return service;
+    },
+    setFail(value: boolean) {
+      failIndex = value;
+    },
+    setInvalidHit(value: boolean) {
+      invalidHit = value;
+    },
+    async restart() {
+      await service.close();
+      service = new MemoryService(options);
+      await service.init();
+    },
+    async cleanup() {
+      await service.close();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const policy = {
+  projectIds: ['dashboard'],
+  shared: false,
+  mandatory: true,
+  approval: 'approved' as const,
+};
+
+test('Draft approval creates a published immutable capture; unchanged sync and restart do not reindex', async () => {
+  const f = await fixture();
+  try {
+    const pageId = 'a'.repeat(32);
+    f.pages.set(pageId, '# Spécification\nConserver la source originale.');
+    const source = await f.service.register({ ...policy, pageId, approval: 'draft' });
+    await f.service.wait();
+    const draft = f.service.store.capture(f.service.store.source(source.id)!.currentSourceId!)!;
+    assert.equal(draft.status, 'draft');
+    assert.equal(f.indexCalls.length, 0);
+    await f.service.update(source.id, policy);
+    await f.service.wait();
+    const approved = f.service.store.capture(f.service.store.source(source.id)!.currentSourceId!)!;
+    assert.notEqual(approved.id, draft.id);
+    assert.equal(approved.status, 'published');
+    assert.equal(approved.content, f.pages.get(pageId));
+    assert.equal(f.service.store.capture(draft.id)!.status, 'draft');
+    assert.equal(f.indexCalls.length, 1);
+    f.service.queue(source.id);
+    await f.service.wait();
+    await f.restart();
+    f.service.queue(source.id);
+    await f.service.wait();
+    assert.equal(f.indexCalls.length, 1);
+    const result = await f.service.retrieve(f.projects[0], 'source');
+    assert.deepEqual(result.sourceIds, [approved.id]);
+    assert.equal(result.memoryVersion, f.service.version('dashboard'));
   } finally {
-    await brain.close();
-    await rm(root, { recursive: true, force: true });
+    await f.cleanup();
   }
 });
 
-test('Brain routes reject foreign origins and malformed actions; interrupted runs remain explicit', async () => {
-  const root = await mkdtemp(resolve(tmpdir(), 'brain-routes-'));
-  const dbPath = resolve(root, 'brain.db');
-  const service = new BrainService({ dbPath });
-  const app = Fastify();
-  await registerBrain(app, service);
+test('Twenty-document corpus selects only approved project and shared datasets; withdrawal preserves history', async () => {
+  const f = await fixture();
   try {
-    assert.equal(
-      (await app.inject({ url: '/api/brain', remoteAddress: '192.168.1.10' })).statusCode,
-      403,
+    const registrations = [];
+    for (let index = 0; index < 20; index++) {
+      const pageId = index.toString(16).padStart(32, '0');
+      f.pages.set(pageId, 'Requirement ' + index);
+      registrations.push(
+        await f.service.register({
+          ...policy,
+          pageId,
+          projectIds: [index % 2 ? 'mobile' : 'dashboard'],
+          shared: index === 19,
+          approval: index === 18 ? 'draft' : 'approved',
+        }),
+      );
+    }
+    await f.service.wait();
+    const first = await f.service.retrieve(f.projects[0], 'feature');
+    assert.equal(first.sources.length, 10);
+    assert.ok(first.sources.some((source) => source.content === 'Requirement 19'));
+    assert.ok(
+      first.sources.every(
+        (source) =>
+          Number(source.content.split(' ')[1]) % 2 === 0 || source.content === 'Requirement 19',
+      ),
     );
-    assert.equal(
-      (await app.inject({ url: '/api/brain/agents', remoteAddress: '192.168.1.10' })).statusCode,
-      403,
-    );
-    assert.equal(
-      (
-        await app.inject({
-          method: 'POST',
-          url: '/api/brain/analyses',
-          headers: { origin: 'https://foreign.invalid' },
-          payload: { projectId: 'dashboard' },
-        })
-      ).statusCode,
-      403,
-    );
-    assert.equal(
-      (
-        await app.inject({
-          method: 'POST',
-          url: '/api/brain/analyses',
-          payload: { projectId: 'dashboard', commit: '--exec=command' },
-        })
-      ).statusCode,
-      400,
-    );
-    assert.equal(
-      (
-        await app.inject({
-          url: '/api/brain',
-          headers: { host: 'foreign.invalid', origin: 'http://foreign.invalid' },
-        })
-      ).statusCode,
-      403,
-    );
-    assert.equal(
-      (await app.inject({ url: '/api/brain', headers: { origin: 'https://foreign.invalid' } }))
-        .statusCode,
-      403,
-    );
-    assert.equal(
-      (await app.inject({ url: '/api/brain', headers: { origin: 'http://localhost:9999' } }))
-        .statusCode,
-      403,
-    );
-    assert.equal(
-      (await app.inject({ url: '/api/brain', headers: { origin: 'http://localhost:5173' } }))
-        .statusCode,
-      200,
-    );
-    assert.equal(
-      (
-        await app.inject({
-          method: 'POST',
-          url: '/api/brain/runs',
-          payload: { kind: 'execute-shell' },
-        })
-      ).statusCode,
-      400,
-    );
-    assert.equal(
-      (await app.inject({ method: 'POST', url: '/api/brain/runs', payload: { kind: 'compare' } }))
-        .statusCode,
-      400,
-    );
-    assert.equal((await app.inject({ url: '/api/brain/search' })).statusCode, 400);
-    assert.equal((await app.inject({ url: '/api/brain/sources/missing' })).statusCode, 404);
+    assert.ok(!first.sources.some((source) => source.content === 'Requirement 18'));
+    const priorId = f.service.store.source(registrations[0].id)!.currentSourceId!;
+    await f.service.update(registrations[0].id, { ...policy, approval: 'withdrawn' });
+    const after = await f.service.retrieve(f.projects[0], 'feature');
+    assert.ok(!after.sourceIds.includes(priorId));
+    assert.notEqual(first.memoryVersion, after.memoryVersion);
+    assert.equal(f.service.store.capture(priorId)!.content, 'Requirement 0');
+    await f.service.update(registrations[2].id, { ...policy, projectIds: ['mobile'] });
+    await f.service.wait();
+    const moved = await f.service.retrieve(f.projects[0], 'feature');
+    assert.ok(!moved.sources.some((source) => source.content === 'Requirement 2'));
   } finally {
-    await app.close();
+    await f.cleanup();
   }
-  const db = new Sqlite(dbPath);
-  db.prepare('INSERT INTO brain_records VALUES (?,?,?)').run(
-    'run',
-    'interrupted',
-    JSON.stringify({
-      id: 'interrupted',
-      kind: 'import',
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      events: [],
-    }),
-  );
-  db.close();
-  const restarted = new BrainService({ dbPath });
-  await restarted.init();
+});
+
+test('Changed and inaccessible sources cannot silently reuse stale evidence', async () => {
+  const f = await fixture();
   try {
-    assert.equal(restarted.state().runs[0].status, 'interrupted');
-    assert.equal(restarted.state().activeRun, null);
+    const pageId = 'b'.repeat(32);
+    f.pages.set(pageId, 'Original requirement');
+    const registration = await f.service.register({ ...policy, pageId });
+    await f.service.wait();
+    const original = f.service.store.source(registration.id)!;
+    f.pages.set(pageId, 'Changed requirement');
+    f.setFail(true);
+    f.service.queue(registration.id);
+    await f.service.wait();
+    assert.equal(f.service.store.source(registration.id)!.status, 'failed');
+    assert.equal(
+      f.service.store.source(registration.id)!.currentSourceId,
+      original.currentSourceId,
+    );
+    await assert.rejects(
+      f.service.retrieve(f.projects[0], 'requirement'),
+      /not fully synchronized/,
+    );
+    f.setFail(false);
+    f.service.queue(registration.id);
+    await f.service.wait();
+    assert.notEqual(
+      f.service.store.source(registration.id)!.currentSourceId,
+      original.currentSourceId,
+    );
+    assert.equal(
+      f.service.store.capture(original.currentSourceId!)!.content,
+      'Original requirement',
+    );
+    f.pages.delete(pageId);
+    f.service.queue(registration.id);
+    await f.service.wait();
+    await assert.rejects(
+      f.service.retrieve(f.projects[0], 'requirement'),
+      /not fully synchronized/,
+    );
   } finally {
-    await restarted.close();
-    await rm(root, { recursive: true, force: true });
+    await f.cleanup();
+  }
+});
+
+test('Retrieval fails closed on unscoped citations and missing applicable sources', async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(f.service.retrieve(f.projects[0], 'none'), /No approved sources/);
+    const pageId = 'c'.repeat(32);
+    f.pages.set(pageId, 'A real requirement');
+    await f.service.register({ ...policy, pageId });
+    await f.service.wait();
+    f.setInvalidHit(true);
+    await assert.rejects(f.service.retrieve(f.projects[0], 'requirement'), /could not be verified/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('Git retrieval uses the supplied analysis commit and never substitutes another current revision', async () => {
+  const f = await fixture();
+  try {
+    const project = { ...f.projects[0], specs: [{ kind: 'git' as const, path: 'SPEC.md' }] };
+    await writeFile(resolve(f.root, 'projects.json'), JSON.stringify([project]));
+    await f.service.registerProjects();
+    const registration = f.service.applicable('dashboard')[0];
+    const snapshot = makeCapture(
+      registration,
+      'Requirement from the analyzed commit',
+      {},
+      '1'.repeat(40),
+    );
+    snapshot.revision = '1'.repeat(40);
+    const current = makeCapture(
+      registration,
+      'Different requirement on current HEAD',
+      {},
+      '2'.repeat(40),
+    );
+    f.service.store.saveCapture(current);
+    f.service.store.saveSource({
+      ...registration,
+      status: 'ready',
+      currentSourceId: current.id,
+      datasetId: 'head-dataset',
+    });
+    const result = await f.service.retrieve(project, 'feature', [snapshot]);
+    assert.equal(result.sources[0].content, snapshot.content);
+    assert.ok(!result.datasets.includes('head-dataset'));
+    await assert.rejects(f.service.retrieve(project, 'feature'), /did not capture/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('Webhook event persistence deduplicates enqueue and interrupted jobs resume after restart', async () => {
+  const f = await fixture();
+  try {
+    const pageId = 'd'.repeat(32);
+    f.pages.set(pageId, 'Requirement');
+    const registration = await f.service.register({ ...policy, pageId, approval: 'draft' });
+    await f.service.wait();
+    let count = 0;
+    assert.equal(
+      f.service.store.recordEvent('delivery-1', () => {
+        count++;
+      }),
+      true,
+    );
+    assert.equal(
+      f.service.store.recordEvent('delivery-1', () => {
+        count++;
+      }),
+      false,
+    );
+    assert.equal(count, 1);
+    const job = {
+      id: 'interrupted',
+      sourceId: registration.id,
+      status: 'running' as const,
+      requestedAt: new Date().toISOString(),
+      attempts: 1,
+    };
+    f.service.store.saveJob(job);
+    await f.restart();
+    assert.equal(f.service.store.jobs().find((value) => value.id === job.id)!.status, 'queued');
+    assert.equal(
+      f.service.store.recordEvent('delivery-1', () => {
+        count++;
+      }),
+      false,
+    );
+    f.service.queue(registration.id);
+    await f.service.wait();
+    assert.equal(f.service.store.jobs().find((value) => value.id === job.id)!.status, 'succeeded');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('Legacy captures remain readable without loading the removed demo workflow', async () => {
+  const f = await fixture();
+  try {
+    const registration: SourceRegistration = {
+      id: 'old',
+      kind: 'notion',
+      title: 'Original',
+      ...policy,
+      status: 'ready',
+    };
+    const source = makeCapture(registration, 'Original historical text');
+    const db = new Sqlite(resolve(f.root, 'brain.db'));
+    db.exec('CREATE TABLE brain_records (kind TEXT, id TEXT, data TEXT)');
+    db.prepare('INSERT INTO brain_records VALUES (?,?,?)').run(
+      'source',
+      source.id,
+      JSON.stringify(source),
+    );
+    db.close();
+    assert.deepEqual(f.service.store.capture(source.id), JSON.parse(JSON.stringify(source)));
+  } finally {
+    await f.cleanup();
   }
 });

@@ -70,8 +70,14 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark" />
           <div>
-            <div className="brand-title">Agent Activity Dashboard</div>
-            <div className="brand-sub">Observability of agents — build phase · anonymized</div>
+            <div className="brand-title">
+              {view === 'brain' ? 'Harmony Brain' : 'Agent Activity Dashboard'}
+            </div>
+            <div className="brand-sub">
+              {view === 'brain'
+                ? 'Project memory and code review'
+                : 'Observability of agents — build phase · anonymized'}
+            </div>
           </div>
         </div>
         <div className="topbar-right">
@@ -102,9 +108,7 @@ export default function App() {
               ))}
             </div>
           )}
-          {view === 'brain' ? (
-            <div className="conn">Local</div>
-          ) : (
+          {view !== 'brain' && (
             <div className={`conn ${connected ? 'on' : 'off'}`}>
               <span className="dot" />
               {connected ? 'Live' : 'Reconnecting…'}

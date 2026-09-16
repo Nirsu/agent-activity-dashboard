@@ -2,6 +2,7 @@ import { brainConfig } from './brain/config.js';
 import type { FastifyInstance } from 'fastify';
 import { BrainAgents } from './brain/analysis/service.js';
 import { reviewDecisions } from './brain/analysis/validation.js';
+import { requireBrainAdmin } from './brain/access.js';
 
 export { BrainAgents };
 
@@ -9,6 +10,7 @@ type StartAnalysisBody = {
   projectId: string;
   commit?: string;
   baseCommit?: string;
+  feature?: string;
 };
 
 type ReviewAnalysisBody = {
@@ -39,13 +41,18 @@ export async function registerBrainAgents(app: FastifyInstance, service = new Br
             projectId: { type: 'string', maxLength: brainConfig.projects.maxIdCharacters },
             commit: { type: 'string', pattern: '^[a-fA-F0-9]{40,64}$' },
             baseCommit: { type: 'string', pattern: '^[a-fA-F0-9]{40,64}$' },
+            feature: {
+              type: 'string',
+              minLength: 1,
+              maxLength: brainConfig.analysis.maxTextCharacters,
+            },
           },
         },
       },
     },
     async (request, reply) => {
-      const { projectId, commit, baseCommit } = request.body;
-      const run = await service.start(projectId, commit, baseCommit);
+      const { projectId, commit, baseCommit, feature } = request.body;
+      const run = await service.start(projectId, commit, baseCommit, feature);
       return reply.code(202).send(run);
     },
   );
@@ -53,6 +60,7 @@ export async function registerBrainAgents(app: FastifyInstance, service = new Br
   app.post<{ Params: { id: string }; Body: ReviewAnalysisBody }>(
     '/api/brain/analyses/:id/reviews',
     {
+      preHandler: requireBrainAdmin,
       schema: {
         body: {
           type: 'object',

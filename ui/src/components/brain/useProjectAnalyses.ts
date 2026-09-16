@@ -1,6 +1,6 @@
 import { brainConfig } from './config';
 import { useEffect, useRef, useState } from 'react';
-import { brainRequest } from './api';
+import { brainAdminRequest, brainRequest } from './api';
 import type { Analysis, AnalysisRun, AnalysesState, SourceSelection } from './types';
 
 export function useProjectAnalyses() {
@@ -11,8 +11,11 @@ export function useProjectAnalyses() {
   const [findingId, setFindingId] = useState('');
   const [commit, setCommit] = useState('');
   const [baseCommit, setBaseCommit] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [feature, setFeature] = useState('');
+  const [pendingAction, setPendingAction] = useState<'analysis' | 'review' | null>(null);
   const [error, setError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
+  const [detailError, setDetailError] = useState<{ runId: string; message: string } | null>(null);
   const [notice, setNotice] = useState('');
   const [document, setDocument] = useState<SourceSelection | null>(null);
   const detailVersion = useRef(0);
@@ -23,6 +26,7 @@ export function useProjectAnalyses() {
     const next = await brainRequest<AnalysesState>('/agents');
     if (version === stateVersion.current) {
       setState(next);
+      setConnectionError('');
       setProjectId((currentId) =>
         next.projects.some((project) => project.id === currentId)
           ? currentId
@@ -40,7 +44,7 @@ export function useProjectAnalyses() {
         await refresh();
       } catch (error) {
         if (!stopped) {
-          setError(error instanceof Error ? error.message : 'Connection interrupted.');
+          setConnectionError(error instanceof Error ? error.message : 'Connection interrupted.');
         }
       }
       if (!stopped) {
@@ -62,9 +66,19 @@ export function useProjectAnalyses() {
 
   async function loadDetail(runId: string) {
     const version = ++detailVersion.current;
-    const next = await brainRequest<Analysis>(`/analyses/${encodeURIComponent(runId)}`);
-    if (version === detailVersion.current) {
-      setAnalysis(next);
+    try {
+      const next = await brainRequest<Analysis>(`/analyses/${encodeURIComponent(runId)}`);
+      if (version === detailVersion.current) {
+        setAnalysis(next);
+        setDetailError(null);
+      }
+    } catch (error) {
+      if (version === detailVersion.current) {
+        setDetailError({
+          runId,
+          message: error instanceof Error ? error.message : 'Analysis unavailable.',
+        });
+      }
     }
   }
 
@@ -74,13 +88,11 @@ export function useProjectAnalyses() {
       setAnalysis(null);
       return;
     }
-    void loadDetail(selectedRun.id).catch((error) => {
-      setError(error instanceof Error ? error.message : 'Analysis unavailable.');
-    });
+    void loadDetail(selectedRun.id);
     return () => {
       ++detailVersion.current;
     };
-  }, [selectedRun, state?.activeRunId]);
+  }, [selectedRun?.id, selectedRun?.detailVersion]);
 
   const detail = analysis?.id === selectedRun?.id ? analysis : null;
   const finding =
@@ -88,6 +100,7 @@ export function useProjectAnalyses() {
     detail?.findings.find((finding) => finding.outcome === 'difference') ??
     detail?.findings[0];
   const sources = detail?.sources ?? [];
+  const busy = pendingAction !== null;
   const locked = busy || Boolean(state?.activeRunId);
 
   function selectProject(nextProjectId: string) {
@@ -96,13 +109,37 @@ export function useProjectAnalyses() {
     setFindingId('');
     setCommit('');
     setBaseCommit('');
+    setFeature('');
     setDocument(null);
+    setError('');
+    setNotice('');
   }
 
   function selectRun(runId: string) {
     setSelectedRunId(runId);
     setFindingId('');
     setDocument(null);
+    setError('');
+    setNotice('');
+  }
+
+  function showActiveRun() {
+    const run = state?.runs.find((run) => run.id === state.activeRunId);
+    if (run) {
+      selectProject(run.projectId);
+      selectRun(run.id);
+    }
+  }
+
+  function prepareRetry() {
+    if (!selectedRun) {
+      return;
+    }
+    setCommit(selectedRun.commit ?? '');
+    setBaseCommit(selectedRun.baseCommit ?? '');
+    setFeature(selectedRun.feature ?? '');
+    setError('');
+    setNotice('Previous setup restored. Check the settings above, then choose Run AI analysis.');
   }
 
   function openSource(sourceId: string, line?: number) {
@@ -115,7 +152,7 @@ export function useProjectAnalyses() {
   }
 
   async function startAnalysis() {
-    setBusy(true);
+    setPendingAction('analysis');
     setError('');
     setNotice('');
     try {
@@ -123,15 +160,24 @@ export function useProjectAnalyses() {
         projectId,
         ...(commit.trim() ? { commit: commit.trim() } : {}),
         ...(baseCommit.trim() ? { baseCommit: baseCommit.trim() } : {}),
+        ...(feature.trim() ? { feature: feature.trim() } : {}),
       });
+      ++stateVersion.current;
       setSelectedRunId(run.id);
       setFindingId('');
-      await refresh();
+      setState(
+        (current) =>
+          current && {
+            ...current,
+            activeRunId: run.id,
+            runs: [run, ...current.runs.filter((item) => item.id !== run.id)],
+          },
+      );
       setNotice('Analysis started. Stages and evidence will appear here.');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Unable to start the analysis.');
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -139,23 +185,22 @@ export function useProjectAnalyses() {
     if (!detail || !finding) {
       return;
     }
-    setBusy(true);
+    setPendingAction('review');
     setError('');
     setNotice('');
     try {
-      await brainRequest(`/analyses/${encodeURIComponent(detail.id)}/reviews`, {
+      await brainAdminRequest(`/analyses/${encodeURIComponent(detail.id)}/reviews`, {
         findingId: finding.id,
         decision,
         note,
         expectedReviewId: finding.reviews[0]?.id ?? '',
       });
-      await loadDetail(detail.id);
-      await refresh();
       setNotice('Review saved in memory.');
+      await loadDetail(detail.id);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Review was not saved.');
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -172,13 +217,21 @@ export function useProjectAnalyses() {
     setCommit,
     baseCommit,
     setBaseCommit,
+    feature,
+    setFeature,
     busy,
+    savingReview: pendingAction === 'review',
     locked,
     error,
+    connectionError,
+    detailError: detailError?.runId === selectedRun?.id ? detailError?.message : undefined,
     notice,
     document,
     selectProject,
     selectRun,
+    showActiveRun,
+    prepareRetry,
+    retryDetail: () => (selectedRun ? loadDetail(selectedRun.id) : Promise.resolve()),
     selectFinding: setFindingId,
     openSource,
     closeSource: () => setDocument(null),

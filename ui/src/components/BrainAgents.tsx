@@ -15,10 +15,12 @@ export default function BrainAgents() {
         <div>
           <div className="brain-eyebrow">DECISIONS / PROJECT CODE / HUMAN REVIEW</div>
           <h1>Project analyses</h1>
-          <p>Read specifications, compare the commit, then prepare the human review.</p>
+          <p>
+            Check a feature against its specifications and inspect the evidence before deciding.
+          </p>
         </div>
         <span className="brain-badge">
-          {state?.configured ? 'AI configured' : 'Setup required'}
+          {!state ? 'Connecting…' : state.configured ? 'AI configured' : 'Setup required'}
         </span>
       </header>
       {analyses.error && (
@@ -34,8 +36,13 @@ export default function BrainAgents() {
           {analyses.notice}
         </p>
       )}
+      {analyses.connectionError && (
+        <p className="brain-warning" role="alert">
+          {analyses.connectionError} Retrying automatically; displayed results may be out of date.
+        </p>
+      )}
       {!state ? (
-        <p role="status">Loading projects…</p>
+        !analyses.connectionError && <p role="status">Loading projects…</p>
       ) : (
         <>
           <AnalysisSetup
@@ -44,12 +51,19 @@ export default function BrainAgents() {
             project={analyses.project}
             commit={analyses.commit}
             baseCommit={analyses.baseCommit}
+            feature={analyses.feature}
             busy={analyses.busy}
             locked={analyses.locked}
             onSelectProject={analyses.selectProject}
             onCommitChange={analyses.setCommit}
             onBaseCommitChange={analyses.setBaseCommit}
+            onFeatureChange={analyses.setFeature}
             onStart={analyses.startAnalysis}
+            onShowActiveRun={() => {
+              analyses.showActiveRun();
+              document.getElementById('brain-analysis-results')?.scrollIntoView({ block: 'start' });
+              document.getElementById('brain-analysis-results')?.focus({ preventScroll: true });
+            }}
           />
           <AnalysisResults
             projectName={analyses.project?.name}
@@ -57,13 +71,21 @@ export default function BrainAgents() {
             runs={analyses.runs}
             selectedRun={analyses.selectedRun}
             detail={analyses.detail}
+            detailError={analyses.detailError}
+            savingReview={analyses.savingReview}
             finding={analyses.finding}
             busy={analyses.busy}
-            locked={analyses.locked}
+            locked={analyses.locked || Boolean(analyses.connectionError)}
             onSelectRun={analyses.selectRun}
             onSelectFinding={analyses.selectFinding}
             onOpenSource={analyses.openSource}
             onSaveReview={analyses.saveReview}
+            onRetryDetail={analyses.retryDetail}
+            onPrepareRetry={() => {
+              analyses.prepareRetry();
+              document.getElementById('brain-analysis-setup')?.scrollIntoView({ block: 'start' });
+              document.getElementById('brain-agent-feature')?.focus({ preventScroll: true });
+            }}
           />
         </>
       )}

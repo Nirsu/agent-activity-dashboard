@@ -1,35 +1,12 @@
 import { brainConfig } from './config';
 import { useState } from 'react';
 import { formatDate, statusLabels } from './presentation';
-import type { BrainSource, Citation, Finding, OpenSource } from './types';
-
-export function CitationButton({
-  citation,
-  sources,
-  onOpenSource,
-}: {
-  citation: Citation;
-  sources: BrainSource[];
-  onOpenSource: OpenSource;
-}) {
-  const sourceTitle =
-    sources.find((source) => source.id === citation.sourceId)?.title ?? 'Archived source';
-  return (
-    <button
-      type="button"
-      className="brain-citation"
-      onClick={() => onOpenSource(citation.sourceId, citation.line)}
-    >
-      <span>
-        {sourceTitle} <small>· line {citation.line} ↗</small>
-      </span>
-      <code>{citation.quote}</code>
-    </button>
-  );
-}
+import { CitationEvidence } from './CitationEvidence';
+import type { BrainSource, Finding, OpenSource, Requirement } from './types';
 
 export function ReviewDossier({
   finding,
+  requirement,
   sources,
   reviewAllowed,
   reviewKey,
@@ -39,6 +16,7 @@ export function ReviewDossier({
   onSaveReview,
 }: {
   finding: Finding;
+  requirement?: Requirement;
   sources: BrainSource[];
   reviewAllowed: boolean;
   reviewKey: string;
@@ -53,30 +31,39 @@ export function ReviewDossier({
         <h3>{finding.title}</h3>
         <span className={`brain-badge ${finding.outcome}`}>{statusLabels[finding.outcome]}</span>
       </div>
-      <p className="brain-explanation">{finding.explanation}</p>
       <div className="brain-evidence-grid">
         <section>
-          <h4>What the specification says</h4>
-          <CitationButton
-            citation={finding.decision}
+          <h4>Requirement being checked</h4>
+          {requirement && (
+            <div className="brain-requirement-statement">
+              <p>{requirement.statement}</p>
+              <small>Applies to: {requirement.scope}</small>
+            </div>
+          )}
+          <CitationEvidence
+            citations={[finding.decision]}
             sources={sources}
             onOpenSource={onOpenSource}
           />
         </section>
         <section>
-          <h4>What the code shows</h4>
+          <h4>Code evidence</h4>
           {finding.evidence.length ? (
-            finding.evidence.map((citation, index) => (
-              <div key={index}>
-                <CitationButton citation={citation} sources={sources} onOpenSource={onOpenSource} />
-              </div>
-            ))
+            <CitationEvidence
+              citations={finding.evidence}
+              sources={sources}
+              onOpenSource={onOpenSource}
+            />
           ) : (
             <p>Insufficient evidence in the snapshot.</p>
           )}
         </section>
       </div>
-      {finding.question && (
+      <section className="brain-assessment">
+        <h4>How the code relates to the requirement</h4>
+        <p className="brain-explanation">{finding.explanation}</p>
+      </section>
+      {finding.question && finding.outcome !== 'aligned' && (
         <div className="brain-question">
           <span>
             {finding.outcome === 'difference' ? 'HUMAN REVIEW QUESTION' : 'ANALYSIS NOTE'}
@@ -84,7 +71,10 @@ export function ReviewDossier({
           <p>{finding.question}</p>
         </div>
       )}
-      <p className="brain-limitation">{finding.limitation}</p>
+      <section className="brain-assessment">
+        <h4>Limits of this finding</h4>
+        <p className="brain-limitation">{finding.limitation}</p>
+      </section>
       {finding.outcome !== 'difference' && (
         <p className="brain-agents-outcome-note">
           {finding.outcome === 'aligned'

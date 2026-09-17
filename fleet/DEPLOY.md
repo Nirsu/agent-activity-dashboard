@@ -95,9 +95,11 @@ the browser thereafter. Without a valid token, `/api/*` and `/live` return 401.
 
 That `?token=` is a one-time bootstrap on the *page* URL only: the dashboard
 moves it into `localStorage` and strips it from the address bar immediately.
-The token is never appended to an API or WebSocket URL — `/api/*` reads it from
-the `x-aad-token` header and `/live` from the WebSocket subprotocol — so it
-stays out of browser history, referrers and access logs.
+Subsequent API calls use the `x-aad-token` header and `/live` uses the WebSocket
+subprotocol. The initial page request still contains the token in its query
+string: URL cleanup in the browser cannot remove it from proxy or server logs
+already written. Configure those systems to omit or redact that query parameter,
+and do not distribute or record token-bearing URLs as ordinary links.
 
 ## Notes
 - **Auth is app-enforced**, so even if the port were exposed, ingest/viewer routes

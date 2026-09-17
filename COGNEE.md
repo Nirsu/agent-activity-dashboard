@@ -62,10 +62,12 @@ been provisioned. Tokens and provider keys stay on the server.
 pinned release, disabling it selects shared graph/vector stores and dataset arguments
 do not provide retrieval isolation. Brain fails closed on unscoped search responses.
 
-Each immutable source capture has its own deterministic dataset name. Brain chooses
+Each source/content/index-configuration combination has a deterministic dataset name.
+Immutable captures of unchanged content can reuse the same dataset. Brain chooses
 the allowed current project/shared dataset IDs before every retrieval. The client:
 
-1. Creates or reuses that dataset and uploads the original plain text unchanged.
+1. Creates or reuses that dataset and uploads its captured text. Git captures apply
+   the same line-preserving minimization as the analysis pipeline.
 2. Starts `cognify` in the background and polls that dataset's pipeline status.
 3. Returns success only after `DATASET_PROCESSING_COMPLETED`.
 4. Uses `CHUNKS`, `only_context=true`, and `verbose=true` to retrieve original chunk
@@ -127,20 +129,8 @@ and graph provenance. Those tests do not spend provider credits. Real indexing,
 isolation, and post-restart retrieval must additionally be checked against the running
 container and approved source corpus; unit tests alone do not prove those properties.
 
-### Development verification, 16 September 2026
-
-The authorized dashboard README was indexed in the real pinned container. After
-restarting that container, service authentication still worked and the same dataset
-and document remained present (one of each). Reusing the completed index took 69 ms
-and called only dataset creation/reuse and status endpoints; the verification blocked
-the add/cognify routes to prevent accidental re-indexing.
-
-A scoped search for `safe hook summaries` returned one chunk in 2.613 seconds. Its
-text matched the immutable Brain capture exactly. The graph returned 47 nodes and
-98 edges, all attributed to that same dataset, with no truncation. This search used
-a query embedding; it did not call the analysis roles or generate a Cognee answer.
-These measurements cover the small local corpus and container restart, not a backup
-restore or concurrent team workload.
+Historical pilot measurements are recorded once in the
+[architecture decision record](BRAIN-NOTION-COGNEE-PLAN.md#historical-pilot-verification--16-september-2026).
 
 References: [pinned API source](https://github.com/topoteretes/cognee/tree/v1.5.4/cognee/api/v1),
 [dataset isolation implementation](https://github.com/topoteretes/cognee/blob/v1.5.4/cognee/modules/search/methods/search.py),

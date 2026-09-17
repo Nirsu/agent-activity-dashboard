@@ -10,7 +10,22 @@ import { minimizeSourceContent, type Source } from '../sources.js';
 import { normalizePageId } from '../notion/page.js';
 import { captureGitDocument, makeCapture, sourceHash } from './capture.js';
 import { MemoryStore } from './store.js';
-import type { RetrievedEvidence, SourceExcerpt, SourceRegistration, SyncJob } from './types.js';
+import { selectCapturedEvidence } from './evidence.js';
+import { inheritSubpagePolicy, reconcileSubpages, subpagesOf } from './subpages.js';
+import type { RetrievedEvidence, SourceRegistration, SourcePolicy, SyncJob } from './types.js';
+
+function policyVersion(source: SourceRegistration) {
+  return JSON.stringify([
+    source.projectIds,
+    source.shared,
+    source.approval,
+    source.mandatory,
+    source.includeSubpages,
+    source.autoApproveSubpages,
+    source.parentSourceId,
+    source.approvalBeforeRemoval,
+  ]);
+}
 
 type Options = {
   dbPath: string;
@@ -128,10 +143,7 @@ export class MemoryService {
     return this.cogneeState;
   }
 
-  private validatePolicy(
-    value: Pick<SourceRegistration, 'projectIds' | 'shared' | 'mandatory' | 'approval'>,
-    projects: Project[],
-  ) {
+  private validatePolicy(value: SourcePolicy, projects: Project[]) {
     if (
       !Array.isArray(value.projectIds) ||
       value.projectIds.length > brainConfig.projects.maxProjects ||
@@ -151,14 +163,16 @@ export class MemoryService {
     if (!value.shared && value.projectIds.length === 0) {
       fail('Select a project or explicitly share this source.');
     }
+    if (
+      (value.includeSubpages !== undefined && typeof value.includeSubpages !== 'boolean') ||
+      (value.autoApproveSubpages !== undefined && typeof value.autoApproveSubpages !== 'boolean') ||
+      (value.autoApproveSubpages && !value.includeSubpages)
+    ) {
+      fail('Automatic subpage approval requires subpage discovery.');
+    }
   }
 
-  async register(
-    input: { pageId: string; title?: string } & Pick<
-      SourceRegistration,
-      'projectIds' | 'shared' | 'mandatory' | 'approval'
-    >,
-  ) {
+  async register(input: { pageId: string; title?: string } & SourcePolicy) {
     const projects = await this.registerProjects();
     this.validatePolicy(input, projects);
     const normalized = normalizePageId(
@@ -183,6 +197,8 @@ export class MemoryService {
       shared: input.shared,
       mandatory: input.mandatory,
       approval: input.approval,
+      includeSubpages: input.includeSubpages ?? false,
+      autoApproveSubpages: input.autoApproveSubpages ?? false,
       status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
     };
     this.store.saveSource(source);
@@ -192,15 +208,35 @@ export class MemoryService {
     return source;
   }
 
-  async update(
-    id: string,
-    input: Pick<SourceRegistration, 'projectIds' | 'shared' | 'mandatory' | 'approval'>,
-  ) {
+  async update(id: string, input: SourcePolicy) {
     const source = this.store.source(id);
     if (!source) {
       fail('Memory source not found.', 404);
     }
-    this.validatePolicy(input, await readProjects(this.options.projectsPath));
+    const policy = {
+      ...input,
+      includeSubpages: input.includeSubpages ?? source.includeSubpages ?? false,
+      autoApproveSubpages: input.autoApproveSubpages ?? source.autoApproveSubpages ?? false,
+    };
+    this.validatePolicy(policy, await readProjects(this.options.projectsPath));
+    if (source.kind !== 'notion' && (policy.includeSubpages || policy.autoApproveSubpages)) {
+      fail('Subpage settings only apply to Notion sources.');
+    }
+    if (source.parentSourceId) {
+      if (source.approvalBeforeRemoval) {
+        fail(
+          'This subpage is outside the selected branch. Synchronize its parent before approving it.',
+        );
+      }
+      if (
+        policy.shared !== source.shared ||
+        [...policy.projectIds].sort().join(',') !== [...source.projectIds].sort().join(',') ||
+        policy.includeSubpages !== source.includeSubpages ||
+        policy.autoApproveSubpages !== source.autoApproveSubpages
+      ) {
+        fail('Subpages inherit their project and discovery settings. Edit the root page instead.');
+      }
+    }
     if (
       source.kind === 'git' &&
       (input.shared ||
@@ -215,13 +251,38 @@ export class MemoryService {
       shared: input.shared,
       mandatory: input.mandatory,
       approval: input.approval,
+      includeSubpages: policy.includeSubpages,
+      autoApproveSubpages: policy.autoApproveSubpages,
       status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
     };
     this.store.saveSource(updated);
+    if (updated.kind === 'notion') {
+      inheritSubpagePolicy(this.store, updated);
+    }
     if (updated.approval !== 'withdrawn') {
       this.queue(id);
     }
     return updated;
+  }
+
+  approveSubpages(id: string) {
+    const parent = this.store.source(id);
+    if (
+      !parent ||
+      parent.kind !== 'notion' ||
+      !parent.includeSubpages ||
+      parent.approval === 'withdrawn'
+    ) {
+      fail('Select an active Notion branch with subpages enabled.');
+    }
+    const drafts = subpagesOf(this.store.sources(), id).filter(
+      (source) => source.approval === 'draft',
+    );
+    for (const source of drafts) {
+      this.store.saveSource({ ...source, approval: 'approved', status: 'pending' });
+      this.queue(source.id);
+    }
+    return { approved: drafts.length };
   }
 
   queue(sourceId: string) {
@@ -254,7 +315,7 @@ export class MemoryService {
   queueAll() {
     return this.store
       .sources()
-      .filter((source) => source.approval !== 'withdrawn')
+      .filter((source) => source.approval !== 'withdrawn' && !source.parentSourceId)
       .map((source) => this.queue(source.id))
       .filter(Boolean);
   }
@@ -294,11 +355,23 @@ export class MemoryService {
   }
 
   private async waitForSources(sourceIds: Set<string>) {
-    while (
-      this.store
-        .jobs()
-        .some((job) => sourceIds.has(job.sourceId) && ['queued', 'running'].includes(job.status))
-    ) {
+    while (true) {
+      const pendingScope = new Set(sourceIds);
+      const registrations = this.store.sources();
+      for (const id of sourceIds) {
+        for (const child of subpagesOf(registrations, id)) {
+          pendingScope.add(child.id);
+        }
+      }
+      if (
+        !this.store
+          .jobs()
+          .some(
+            (job) => pendingScope.has(job.sourceId) && ['queued', 'running'].includes(job.status),
+          )
+      ) {
+        return;
+      }
       if (this.stopped) {
         fail('Memory synchronization is stopping.');
       }
@@ -309,13 +382,28 @@ export class MemoryService {
   private async readSource(source: SourceRegistration) {
     if (source.kind === 'notion') {
       const page = await this.options.notion.fetchPage(source.pageId!);
+      if (source.parentSourceId) {
+        const parent = this.store.source(source.parentSourceId);
+        if (
+          !parent?.includeSubpages ||
+          parent.approval === 'withdrawn' ||
+          page.parentPageId !== parent.pageId
+        ) {
+          fail(
+            'The page is no longer a verified child of its registered parent. Synchronize the parent branch.',
+          );
+        }
+      }
       source.title = page.title;
       source.url = page.url;
       source.properties = page.properties;
-      return makeCapture(source, page.content, page.properties, page.editedAt, page.raw);
+      return {
+        capture: makeCapture(source, page.content, page.properties, page.editedAt, page.raw),
+        page,
+      };
     }
     if (source.kind === 'review') {
-      return makeCapture(source, source.reviewContent!);
+      return { capture: makeCapture(source, source.reviewContent!) };
     }
     const projects = await readProjects(this.options.projectsPath);
     const project = projects.find((value) => value.id === source.git?.projectId);
@@ -323,7 +411,7 @@ export class MemoryService {
       fail('The source project is no longer registered.');
     }
     const document = await captureGitDocument(project, source.git!.path);
-    return makeCapture(source, document.content, {}, document.commit);
+    return { capture: makeCapture(source, document.content, {}, document.commit) };
   }
 
   private async synchronize(job: SyncJob) {
@@ -332,12 +420,7 @@ export class MemoryService {
       this.store.saveJob({ ...job, status: 'succeeded', finishedAt: new Date().toISOString() });
       return;
     }
-    const policy = JSON.stringify([
-      source.projectIds,
-      source.shared,
-      source.approval,
-      source.mandatory,
-    ]);
+    const policy = policyVersion(source);
     job = {
       ...job,
       status: 'running',
@@ -348,19 +431,28 @@ export class MemoryService {
     this.store.saveJob(job);
     this.store.saveSource({ ...source, status: 'syncing', error: undefined });
     try {
-      const capture = await this.readSource(source);
+      const { capture, page } = await this.readSource(source);
       this.store.saveCapture(capture);
+      if (policy !== policyVersion(this.store.source(source.id)!)) {
+        fail('Source settings changed during capture. Synchronize the updated source.');
+      }
       const datasetId =
         source.approval === 'approved' ? await this.indexCapture(capture, source.id) : undefined;
       const latest = this.store.source(source.id)!;
-      if (
-        policy !==
-        JSON.stringify([latest.projectIds, latest.shared, latest.approval, latest.mandatory])
-      ) {
+      if (policy !== policyVersion(latest)) {
         fail('Source scope or approval changed during indexing. Synchronize the updated source.');
       }
+      const children = page
+        ? await reconcileSubpages(this.store, latest, page, (id) =>
+            this.options.notion.fetchPage(id),
+          )
+        : [];
+      const completed = this.store.source(source.id)!;
+      if (policy !== policyVersion(completed)) {
+        fail('Source settings changed during subpage discovery. Synchronize the updated source.');
+      }
       this.store.saveSource({
-        ...latest,
+        ...completed,
         title: source.title,
         url: source.url,
         properties: source.properties,
@@ -373,6 +465,9 @@ export class MemoryService {
         error: undefined,
       });
       this.store.saveJob({ ...job, status: 'succeeded', finishedAt: new Date().toISOString() });
+      for (const childId of children) {
+        this.queue(childId);
+      }
     } catch (error) {
       const message =
         error instanceof Error && 'statusCode' in error
@@ -474,7 +569,17 @@ export class MemoryService {
   ): Promise<RetrievedEvidence> {
     await this.registerProjects();
     const applicable = this.applicable(project.id);
-    if (!applicable.length) {
+    const branches = this.store
+      .sources()
+      .filter(
+        (source) =>
+          source.kind === 'notion' &&
+          !source.parentSourceId &&
+          source.includeSubpages &&
+          source.approval !== 'withdrawn' &&
+          (source.shared || source.projectIds.includes(project.id)),
+      );
+    if (!applicable.length && !branches.some((source) => source.autoApproveSubpages)) {
       fail('No approved sources are configured for this project.', 409);
     }
     const pendingSources = new Set(
@@ -483,17 +588,31 @@ export class MemoryService {
         .filter((job) => ['queued', 'running'].includes(job.status))
         .map((job) => job.sourceId),
     );
-    for (const source of applicable.filter((entry) => entry.kind !== 'git')) {
+    const synchronized = new Map(
+      [...applicable, ...branches]
+        .filter((entry) => entry.kind !== 'git' && !entry.parentSourceId)
+        .map((source) => [source.id, source]),
+    );
+    for (const source of synchronized.values()) {
       const stale =
         !source.lastSyncedAt ||
         Date.now() - Date.parse(source.lastSyncedAt) > brainConfig.synchronization.maxFreshnessMs;
-      if ((stale || source.status !== 'ready') && !pendingSources.has(source.id)) {
+      const needsSync =
+        stale ||
+        !source.currentSourceId ||
+        source.status === 'failed' ||
+        (source.approval === 'approved' && source.status !== 'ready');
+      if (needsSync && !pendingSources.has(source.id)) {
         this.queue(source.id);
       }
     }
-    await this.waitForSources(
-      new Set(applicable.filter((source) => source.kind !== 'git').map((source) => source.id)),
-    );
+    await this.waitForSources(new Set(synchronized.keys()));
+    if (branches.some((source) => this.store.source(source.id)?.status === 'failed')) {
+      fail(
+        'Subpage discovery is incomplete. Check the branch synchronization before analysis.',
+        409,
+      );
+    }
     const memoryVersion = this.version(project.id);
     const contextVersion = this.contextVersion(project.id);
     const ready = this.applicable(project.id).filter((entry) => entry.kind !== 'git');
@@ -522,65 +641,16 @@ export class MemoryService {
     }
     const datasets = ready.map((source) => source.datasetId!);
     const hits = await this.options.cognee.search(query, datasets);
-    const selected = new Map<string, { source: Source; excerpts: SourceExcerpt[] }>();
-    function include(source: Source, startLine: number, endLine: number) {
-      const entry = selected.get(source.id) ?? { source, excerpts: [] };
-      entry.excerpts.push({ sourceId: source.id, startLine, endLine });
-      selected.set(source.id, entry);
-    }
-    for (const registration of ready.filter((source) => source.mandatory)) {
-      const source = this.store.capture(registration.currentSourceId!)!;
-      include(source, 1, source.lines);
-    }
-    for (const hit of hits) {
-      const registration = ready.find((source) => source.datasetId === hit.datasetId);
-      const capture = registration && this.store.capture(registration.currentSourceId!);
-      const position = capture?.content.indexOf(hit.text) ?? -1;
-      if (!capture || !hit.text.trim() || position < 0) {
-        fail('Retrieved evidence could not be verified against its captured source.');
-      }
-      const startLine = capture.content.slice(0, position).split('\n').length;
-      const endLine =
-        capture.content.slice(0, position + hit.text.length).split('\n').length -
-        (hit.text.endsWith('\n') ? 1 : 0);
-      include(capture, startLine, endLine);
-    }
-    const sources = [...selected.values()].map((entry) => entry.source);
-    const excerpts: SourceExcerpt[] = [];
-    let selectedBytes = 0;
-    for (const entry of selected.values()) {
-      const merged: SourceExcerpt[] = [];
-      for (const excerpt of entry.excerpts.sort(
-        (left, right) => left.startLine - right.startLine,
-      )) {
-        const previous = merged.at(-1);
-        if (previous && excerpt.startLine <= previous.endLine + 1) {
-          previous.endLine = Math.max(previous.endLine, excerpt.endLine);
-        } else {
-          merged.push({ ...excerpt });
-        }
-      }
-      const lines = entry.source.content.split('\n');
-      for (const excerpt of merged) {
-        selectedBytes += Buffer.byteLength(
-          lines.slice(excerpt.startLine - 1, excerpt.endLine).join('\n'),
-        );
-      }
-      excerpts.push(...merged);
-    }
-    if (!sources.length) {
-      fail('No applicable evidence was retrieved. This change has not been validated.', 409);
-    }
+    const { sources, excerpts } = selectCapturedEvidence(
+      ready.map((registration) => ({
+        source: this.store.capture(registration.currentSourceId!)!,
+        datasetId: registration.datasetId!,
+        mandatory: registration.mandatory,
+      })),
+      hits,
+    );
     if (contextVersion !== this.contextVersion(project.id)) {
       fail('Source approval or scope changed during retrieval. Restart the analysis.', 409);
-    }
-    if (
-      sources.length > brainConfig.analysis.maxSources ||
-      selectedBytes > brainConfig.analysis.maxSourceBytes
-    ) {
-      fail(
-        'Retrieved context exceeds the analysis budget. Narrow the project scope or mandatory sources.',
-      );
     }
     return {
       sources,
@@ -607,7 +677,7 @@ export class MemoryService {
       mandatory: false,
       approval: review.decision === 'investigate' ? 'draft' : 'approved',
       status: 'pending',
-      reviewContent: `# Human review\n\nProject: ${run.projectName}\nAnalysis: ${run.id}\nCommit: ${run.commit}\nDecision: ${review.decision}\nRecorded at: ${review.at}\nReviewer: ${review.actor}\n\n${review.note}\n\nApplies to the cited analysis and commit. This record does not modify the authoritative specification.\nSource: ${finding.decision.sourceId}, line ${finding.decision.line}\n`,
+      reviewContent: `# Human review\n\nProject: ${run.projectName}\nAnalysis: ${run.id}\nCommit: ${run.commit}\n${run.submission ? `Submitted snapshot: ${run.submission.id}\nThe commit is its baseline, not the submitted code revision.\n` : ''}Decision: ${review.decision}\nRecorded at: ${review.at}\nReviewer: ${review.actor}\n\n${review.note}\n\nApplies to the cited analysis and captured code only. This record does not modify the authoritative specification.\nSource: ${finding.decision.sourceId}, line ${finding.decision.line}\n`,
     };
     this.store.saveSource(source);
     this.queue(id);

@@ -144,6 +144,13 @@ export function useBrainMemory() {
         'PUT',
         'Source settings saved.',
       ),
+    approveSubpages: (sourceId: string) =>
+      mutate(
+        `/memory/sources/${encodeURIComponent(sourceId)}/approve-subpages`,
+        {},
+        'POST',
+        'Current draft subpages approved. Indexing queued; future subpages keep the branch policy.',
+      ),
     sync: (sourceId?: string) =>
       mutate(
         '/memory/sync',

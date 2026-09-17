@@ -5,6 +5,10 @@ immutable captures, project scope, analyses, and human decisions. Cognee supplie
 the derived search index and extracted graph. Developer agents call Brain over HTTP;
 they do not need Notion, Cognee, or model-provider credentials.
 
+This guide describes the current runtime. The original [README](README.md) remains
+a registered specification; its references to a fixed-rule demo, local exports and
+no AI calls describe the retired workflow. Use this guide for operational setup.
+
 ## Start locally
 
 Use Node.js and Docker with Compose on Windows, macOS, or Linux. Project commands
@@ -27,7 +31,9 @@ npm run brain
 
 5. Open `http://127.0.0.1:5173/#brain/settings`, connect Notion, and check Cognee.
 6. In Memory, register a Notion page, choose its project or shared scope, and review
-   its approval. A readable test page is not automatically an approved specification.
+   its approval. Enable **Include subpages** to discover nested pages. Enable
+   **Automatically approve all subpages** to approve and index existing and future
+   descendants; otherwise they start as drafts. The root's own approval is separate.
 7. Synchronize and wait for an approved source to become ready. Then open Project analyses,
    describe a narrow feature change, and launch its analysis.
 
@@ -51,8 +57,11 @@ Each entry in `brain.projects.json` contains:
 Register Notion pages through Memory, not through local export paths in this file.
 The selected page is captured through the durable MCP connection. Its scope, approval,
 mandatory status, capture revision, and synchronization/indexing state remain visible.
-Child pages and database rows are not silently made part of the corpus: register the
-specific pages that the project should use.
+Recursive discovery is an explicit root-page setting. Descendants inherit its project
+scope and keep separate captures and citations. Existing drafts can also be approved
+with **Approve current subpages** without enabling automatic approval for future pages.
+Database rows and ordinary linked pages require explicit registration.
+See [subpage approval and synchronization](NOTION-MCP.md#subpage-approval).
 
 Approved shared sources apply to every registered project; approved project sources
 apply only to their selected projects. Mandatory sources are included explicitly
@@ -68,6 +77,12 @@ at the requested immutable commit. The analysis records the source/index generat
 actually used, rather than claiming that a later source edit was already checked.
 
 ## A developer agent or CI calls Brain
+
+For direct use from a coding conversation, [Brain MCP](BRAIN-MCP.md) exposes
+project discovery, reference retrieval, commit review and before-commit code
+submissions at `/api/brain/mcp`. It reuses this same analysis pipeline. Submitted
+files form an immutable overlay on a known Git baseline; specifications stay
+server-controlled and the registered checkout is never modified.
 
 The first remote acquisition contract is a registered server checkout plus full head
 and optional base commit SHAs. The server cannot read a path on a developer's computer.
@@ -114,12 +129,22 @@ to merge or deploy. No Brain MCP server is required for this HTTP contract.
 
 The server executes the [reader](server/prompts/reader.md),
 [comparison](server/prompts/comparison.md), then
-[arbitration preparation](server/prompts/arbitration.md). The
-[orchestration contract](server/prompts/orchestrator.md) describes the code-enforced
-order; it is not an extra model call. Structured responses use OpenAI Responses.
+[arbitration preparation](server/prompts/arbitration.md). Orchestration is enforced
+by server code, with at most three OpenAI Responses calls and no autonomous loop:
+
+1. Validate the registered project and revision; capture allowed code and approved
+   references. Apply submitted code only as an immutable overlay on the baseline.
+2. Load the three prompts and record their hash. Run each role in order, validating
+   its structured output, IDs and exact citations before continuing.
+3. Recheck source approval and scope before each call and before completion. Stop
+   on the first failure without retrying through another provider.
+4. Store the evidence, model usage, progress and results in SQLite. An administrator
+   records human decisions; each revision is retained and queued as scoped context,
+   never as a replacement specification. Generated fields use English; quotes retain
+   their source language. No agent executes code or changes a source.
 
 Retrieved passages must match the immutable Brain capture. Model citations must
-match a captured line actually supplied to that role. Invalid citations, provider errors, refusals,
+match a complete captured line range actually supplied to that role. Invalid citations, provider errors, refusals,
 and incomplete responses stop the run. These checks establish provenance, not the
 correctness of reasoning. Sources and model outputs remain data, never executable
 instructions. The model has no shell, Notion-write, or repository-write tools.
@@ -129,19 +154,10 @@ the decision; Brain preserves prior review entries. The pilot does not implement
 Teams notifications, automatic corrections, Microsoft sign-in, individual reviewer
 identity verification, or document-disclosure classification.
 
-## Notion OAuth and administrator access
+## Connections and administrator access
 
-Settings offers Connect, Reconnect, Disconnect, and Test connection. OAuth credentials
-are encrypted in the server's persistent data directory. The server refreshes expiring
-tokens, serializes refresh operations, and saves rotated credentials atomically.
-Revoked or invalid authorization requires a new human login. Moving to the company's
-connection means reconnecting and verifying page access and project mappings.
-
-Set `BRAIN_NOTION_REDIRECT_URL` to the exact callback reachable by the authorizing
-browser. Local default: `http://127.0.0.1:4318/api/brain/connections/notion/callback`.
-Behind the Docker UI proxy it must use that proxy's externally reachable origin.
-For a server, use `https://brain.example.com/api/brain/connections/notion/callback`.
-Changing the callback requires reconnection.
+Use [Notion setup](NOTION-MCP.md#connect-brain-to-notion) for OAuth authorization,
+the public callback URL, credential renewal and moving to a company connection.
 
 Shared deployments require separate `VIEWER_TOKEN` and `BRAIN_ADMIN_TOKEN` values.
 The latter protects source/connection management and is entered in Brain Settings.
@@ -179,18 +195,9 @@ Sync now queues durable work. The local default periodically rechecks registered
 sources; `BRAIN_SYNC_MODE=webhook` uses signed events plus periodic reconciliation.
 Intervals and retry limits are in `server/src/brain/config.json`.
 
-Webhook routes are `/api/brain/webhooks/notion` and `/api/brain/webhooks/github`.
-Configure `BRAIN_NOTION_WEBHOOK_VERIFICATION_TOKEN` or
-`BRAIN_GITHUB_WEBHOOK_SECRET` separately. GitHub also needs
-`BRAIN_GITHUB_WEBHOOK_PROJECTS`, a JSON map such as
-`{"your-org/dashboard":["dashboard"]}`. Notifications request a fresh read; they
-do not start a paid analysis of every project. The checkout still needs to be updated
-by CI before Git synchronization can capture the new commit.
-
-Notion MCP OAuth does not create a webhook subscription. Configure an approved Notion
-integration, accessible HTTPS endpoint, page access, and verification token through
-Notion administration separately. The receiver does not accept an incoming unauthenticated
-verification token as trusted configuration. Polling works without webhook enrollment.
+See [synchronization and optional webhooks](NOTION-MCP.md#synchronization-and-optional-webhooks)
+for Notion subscriptions, GitHub mappings and signature verification. Polling works
+without webhook enrollment. Notifications request a fresh read, not an analysis.
 
 Open `/#brain/graph` for current project/shared memory, recorded citations, findings,
 reviews, and explicitly labeled extracted concepts. Zoom, filters, keyboard selection,
@@ -225,6 +232,9 @@ then checks the portable launcher and developer client. It uses temporary data a
 substituted providers, without paid API calls. For focused changes, use
 `npm run test:brain-ui` or one of its individual reader, graph, memory, and analysis
 commands. The standalone launcher test requires the application to be built first.
+Provider transport tests exercise `OpenAIClient` directly; integration tests cover
+pipeline order, failure propagation and stored evidence. Temporary Git repositories
+ignore personal Git configuration, signing and templates.
 
 Automated tests use substituted providers and do not demonstrate model quality.
 Before wider use, verify the real Notion-to-Cognee-to-analysis flow, exact citations,

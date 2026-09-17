@@ -2,13 +2,18 @@ import React from 'react';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create } from 'react-test-renderer';
 import { MemorySourceForm } from '../ui/src/components/brain/MemorySourceForm';
 import {
   memorySourceStatus,
   memorySourceExplanation,
 } from '../ui/src/components/brain/presentation';
-import type { MemorySource } from '../ui/src/components/brain/memoryTypes';
-import { canSyncSource, filterMemorySources } from '../ui/src/components/brain/memoryView';
+import type { MemorySource, SourceRegistration } from '../ui/src/components/brain/memoryTypes';
+import {
+  canSyncSource,
+  filterMemorySources,
+  orderMemorySources,
+} from '../ui/src/components/brain/memoryView';
 
 test('source filters retain shared project references and separate failed and withdrawn sources', () => {
   const source: MemorySource = {
@@ -73,7 +78,7 @@ test('source forms surface save errors beside the controls and lock inputs durin
       onCancel={() => {}}
     />,
   );
-  assert.match(html, /fieldset class="brain-memory-form-fields" disabled=""/);
+  assert.match(html, /<fieldset\b[^>]*\bdisabled=""/);
   assert.match(html, /role="alert"/);
   assert.match(html, /Administrator access required/);
   assert.match(html, /Set administrator access in Settings/);
@@ -115,4 +120,102 @@ test('new pages require an explicit scope and default to draft approval', () => 
   assert.doesNotMatch(html, /checked=""/);
   assert.match(html, /Notion page link or ID/);
   assert.match(html, /The original Notion page is never changed/);
+  assert.match(html, /Include subpages/);
+  assert.doesNotMatch(html, /Automatically approve all subpages/);
+});
+
+test('subpage options are submitted explicitly and disabling discovery resets automatic approval', async () => {
+  const source: MemorySource = {
+    id: 'root',
+    pageId: 'a'.repeat(32),
+    title: 'Project pages',
+    kind: 'notion',
+    projectIds: ['dashboard'],
+    shared: false,
+    mandatory: false,
+    approval: 'draft',
+    status: 'pending',
+  };
+  const saved: SourceRegistration[] = [];
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(
+      <MemorySourceForm
+        source={source}
+        projects={[{ id: 'dashboard', name: 'Dashboard' }]}
+        busy={false}
+        onSave={async (value) => {
+          saved.push(value);
+          return true;
+        }}
+        onCancel={() => {}}
+      />,
+    );
+  });
+  const checkbox = (text: string) =>
+    renderer.root
+      .findAllByType('label')
+      .find((label) =>
+        label.children.some((child) => typeof child === 'string' && child.includes(text)),
+      )!
+      .findByType('input');
+  try {
+    await act(async () =>
+      checkbox('Include subpages').props.onChange({ target: { checked: true } }),
+    );
+    assert.equal(checkbox('Automatically approve all subpages').props.checked, false);
+    await act(async () =>
+      checkbox('Automatically approve all subpages').props.onChange({ target: { checked: true } }),
+    );
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+    assert.equal(saved[0].includeSubpages, true);
+    assert.equal(saved[0].autoApproveSubpages, true);
+    assert.equal(
+      saved[0].approval,
+      'draft',
+      'The container and its subpages have separate approval',
+    );
+    await act(async () =>
+      checkbox('Include subpages').props.onChange({ target: { checked: false } }),
+    );
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+    assert.equal(saved[1].includeSubpages, false);
+    assert.equal(saved[1].autoApproveSubpages, false);
+  } finally {
+    act(() => renderer.unmount());
+  }
+});
+
+test('source ordering keeps subpages below their parent and retains children when filters hide that parent', () => {
+  const parent: MemorySource = {
+    id: 'root',
+    title: 'Project',
+    kind: 'notion',
+    projectIds: ['dashboard'],
+    shared: false,
+    mandatory: false,
+    approval: 'draft',
+    status: 'pending',
+  };
+  const child = { ...parent, id: 'child', parentSourceId: 'root' };
+  const nested = { ...parent, id: 'nested', parentSourceId: 'child' };
+  assert.deepEqual(
+    orderMemorySources([nested, child, parent]).map((source) => source.id),
+    ['root', 'child', 'nested'],
+  );
+  assert.deepEqual(
+    orderMemorySources([nested, child]).map((source) => source.id),
+    ['child', 'nested'],
+  );
+  const html = renderToStaticMarkup(
+    <MemorySourceForm
+      source={child}
+      projects={[]}
+      busy={false}
+      onSave={async () => true}
+      onCancel={() => {}}
+    />,
+  );
+  assert.match(html, /Project scope and subpage discovery follow the root page/);
+  assert.doesNotMatch(html, /Automatically approve all subpages/);
 });

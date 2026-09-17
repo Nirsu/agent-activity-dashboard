@@ -5,6 +5,14 @@ Preserve source-of-truth documents, imported content, exact quotations, and exte
 Keep source-language fixtures when needed to verify parsing and faithful quotation.
 Use French when discussing the work with the user unless they request otherwise.
 
+# Brain review
+
+When the user requests a Brain review from a coding conversation, follow
+`BRAIN-MCP.md`. Discover the project and read its references before implementation.
+For a before-commit review, submit the actual modified file contents through
+`brain_submit_change`, then poll `brain_get_analysis`. Preserve unrelated work,
+report unsupported scope, and leave exceptions and approvals to a human.
+
 # Readability
 
 Use descriptive names, explicit control-flow blocks, and one statement per line.

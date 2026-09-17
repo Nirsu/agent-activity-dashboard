@@ -47,28 +47,39 @@ function parseCitation(value: unknown, sources: Source[], excerpts?: SourceExcer
   const sourceId = requireText(citation.sourceId, brainConfig.memory.maxRecordIdCharacters);
   const quote = requireText(citation.quote, brainConfig.analysis.maxQuoteCharacters);
   const line = citation.line;
+  // Older saved analyses and clients used single-line citations.
+  const endLine = citation.endLine === undefined ? line : citation.endLine;
   const source = sources.find((source) => source.id === sourceId);
+  const lines = source?.content.split('\n');
 
   if (
     !Number.isInteger(line) ||
     (line as number) < 1 ||
-    source?.content.split('\n')[(line as number) - 1] !== quote
+    !Number.isInteger(endLine) ||
+    (endLine as number) < (line as number) ||
+    !lines ||
+    (endLine as number) > lines.length ||
+    lines.slice((line as number) - 1, endLine as number).join('\n') !== quote
   ) {
     fail('Citation rejected: incorrect source, line number, or quote.');
   }
   if (
     excerpts &&
-    !excerpts.some(
-      (excerpt) =>
-        excerpt.sourceId === sourceId &&
-        (line as number) >= excerpt.startLine &&
-        (line as number) <= excerpt.endLine,
-    )
+    !quote
+      .split('\n')
+      .every((_, index) =>
+        excerpts.some(
+          (excerpt) =>
+            excerpt.sourceId === sourceId &&
+            (line as number) + index >= excerpt.startLine &&
+            (line as number) + index <= excerpt.endLine,
+        ),
+      )
   ) {
     fail('Citation rejected: the line was not included in the retrieved excerpts.');
   }
 
-  return { sourceId, line: line as number, quote };
+  return { sourceId, line: line as number, endLine: endLine as number, quote };
 }
 
 function requireExactRequirementIds(
@@ -157,7 +168,7 @@ export function parseArbitrationDossiers(
         brainConfig.analysis.maxRequirementIdCharacters,
       ),
       title: requireText(dossier.title, brainConfig.analysis.maxTitleCharacters),
-      question: requireText(dossier.question),
+      question: dossier.question === '' ? '' : requireText(dossier.question),
       limitation: requireText(dossier.limitation),
     };
   });

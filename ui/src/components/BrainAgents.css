@@ -265,7 +265,155 @@
 .brain-agents .brain-review-layout {
   margin-top: 20px;
 }
+.brain-analysis-coverage {
+  margin: 20px 0 8px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.brain-analysis-coverage h3 {
+  font-size: 14px;
+}
+.brain-analysis-coverage p,
+.brain-analysis-coverage dl {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.brain-analysis-coverage p {
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+.brain-analysis-coverage dl {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+.brain-analysis-coverage dl > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 3fr;
+  gap: 16px;
+}
+.brain-analysis-coverage dt {
+  color: var(--text-dim);
+}
+.brain-analysis-coverage dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.brain-agents .brain-evidence-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+.brain-agents .brain-dossier h4 {
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.brain-requirement-statement {
+  margin-bottom: 14px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.brain-requirement-statement small {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.brain-citation-evidence {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.brain-evidence-source {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.brain-evidence-source-link {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.brain-evidence-source-link span {
+  color: var(--brain-teal);
+}
+.brain-agents .brain-evidence-legend {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.brain-evidence-code {
+  overflow: auto;
+  max-height: 380px;
+  padding: 8px 0;
+}
+.brain-evidence-line {
+  display: grid;
+  grid-template-columns: 4.5ch minmax(0, 1fr);
+  padding: 0 12px;
+  gap: 12px;
+  color: var(--text-dim);
+  border-left: 2px solid transparent;
+}
+.brain-evidence-line.cited {
+  color: var(--text);
+  background: #71dbc60a;
+  border-left-color: #71dbc660;
+}
+.brain-evidence-number {
+  text-align: right;
+  color: var(--text-dim);
+  user-select: none;
+  font:
+    11px/21px ui-monospace,
+    monospace;
+}
+.brain .brain-evidence-line code {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font:
+    12px/21px ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.brain-evidence-gap {
+  padding: 5px 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.brain-assessment {
+  margin-top: 24px;
+}
+.brain-agents .brain-assessment .brain-explanation {
+  margin-bottom: 0 !important;
+  color: var(--text);
+}
 @media (max-width: 700px) {
+  .brain-analysis-coverage dl > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
   .brain-agents-setup {
     padding: 14px;
   }

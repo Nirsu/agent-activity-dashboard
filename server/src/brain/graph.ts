@@ -221,6 +221,17 @@ export async function addCurrentMemory(graph: MemoryGraph, memory: GraphMemory) 
       indexed.set(registration.datasetId, registration);
     }
   }
+  for (const child of registrations) {
+    const parent = registrations.find((source) => source.id === child.parentSourceId);
+    if (parent && !child.approvalBeforeRemoval) {
+      addEdge(
+        graph,
+        parent.currentSourceId ? `source:${parent.currentSourceId}` : `registration:${parent.id}`,
+        child.currentSourceId ? `source:${child.currentSourceId}` : `registration:${child.id}`,
+        'contains subpage',
+      );
+    }
+  }
   const scopeNode = graph.nodes.find((node) => node.id === graph.scope.id);
   if (scopeNode && !scopeNode.analysisId && registrations.length) {
     scopeNode.status = 'registered memory';

@@ -12,7 +12,7 @@ const executeFile = promisify(execFile);
 const sensitivePath =
   /(^|\/)(\.git|\.env[^/]*|[^/]*(?:secret|credential|private[-_]?key)[^/]*|node_modules|dist|build)(\/|$)|\.(pem|key|p12|pfx)$/i;
 
-function requireRepoPath(value: unknown): string {
+export function requireRepoPath(value: unknown): string {
   const path = requireText(value, brainConfig.projects.maxGitPathCharacters);
   const containsTraversal = path.split('/').some((segment) => segment === '..' || segment === '.');
   if (
@@ -25,6 +25,16 @@ function requireRepoPath(value: unknown): string {
     fail('Git path is not allowed in the configured scope.');
   }
   return path;
+}
+
+export function isAllowedCodePath(project: Project, path: string) {
+  return (
+    project.codePaths.some((prefix) =>
+      prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix,
+    ) &&
+    !sensitivePath.test(path) &&
+    !project.specs.some((specification) => specification.path === path)
+  );
 }
 
 export async function readProjects(projectsPath: string): Promise<Project[]> {
@@ -101,7 +111,11 @@ async function runGit(project: Project, args: string[]): Promise<string> {
   return stdout;
 }
 
-export async function captureProjectSources(run: AnalysisRun, project: Project) {
+export async function captureProjectSources(
+  run: Pick<AnalysisRun, 'commit' | 'baseCommit' | 'sources' | 'changedFiles'>,
+  project: Project,
+  options: { specificationsOnly?: boolean; submittedPaths?: string[] } = {},
+) {
   run.commit = (
     await runGit(project, ['rev-parse', '--verify', `${run.commit ?? 'HEAD'}^{commit}`])
   ).trim();
@@ -167,18 +181,20 @@ export async function captureProjectSources(run: AnalysisRun, project: Project) 
     addSource(specification.path, content, true);
   }
 
+  if (options.specificationsOnly) {
+    return;
+  }
+
   const selectedFiles = files.filter((path) => {
-    const isAllowed = project.codePaths.some((prefix) =>
-      prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix,
-    );
-    const isSpecification = project.specs.some(
-      (specification) => specification.kind === 'git' && specification.path === path,
-    );
     const isWithinRevisionScope = !run.baseCommit || run.changedFiles.includes(path);
-    return isAllowed && !sensitivePath.test(path) && !isSpecification && isWithinRevisionScope;
+    return (
+      isAllowedCodePath(project, path) &&
+      isWithinRevisionScope &&
+      !options.submittedPaths?.includes(path)
+    );
   });
 
-  if (selectedFiles.length === 0 && !run.baseCommit) {
+  if (selectedFiles.length === 0 && !run.baseCommit && !options.submittedPaths?.length) {
     fail('No code files in the configured scope.');
   }
   for (const path of selectedFiles) {

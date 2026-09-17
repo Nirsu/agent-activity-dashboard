@@ -124,7 +124,6 @@ test('graph marks extracted relations separately from recorded references', () =
       onSelect: () => {},
     }),
   );
-  assert.match(html, /class=" extracted"/);
   assert.match(html, /mentions · Extracted by Cognee/);
   assert.match(html, /reviewed by · Recorded reference/);
   assert.match(html, /aria-label="entity: Extracted concept"/);

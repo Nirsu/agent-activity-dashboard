@@ -1,18 +1,18 @@
 # Harmony Brain: Notion and Cognee integration plan
 
-Status: implemented as a private, single-instance pilot on 16 September 2026. Deployment and broader corpus evaluation remain separate release gates.
+Architecture decision record for the private, single-instance pilot. Deployment and broader corpus evaluation remain separate release gates. Use the operating guides below for current setup and API behavior.
 
-## Implementation verification
+## Historical pilot verification — 16 September 2026
 
-- Durable Notion OAuth is connected to the selected workspace; the connection survived a Brain restart. The original test page was captured and remains a draft awaiting approval because it contains no dashboard requirements.
+These observations describe that pilot run, not the current source approvals or connection state.
+
+- Durable Notion OAuth connected to the selected workspace and survived a Brain restart. The original test page was captured and left as a draft during that run because it contained no dashboard requirements.
 - Publication policy for this pilot is explicit approval in Brain, as chosen by the user. Notion properties remain preserved metadata; no inferred publication status is used.
 - Cognee 1.5.4 indexed the dashboard README in approximately 31 seconds. A real reader/comparison/arbitration run on the safe-hook-summary feature completed in approximately 22 seconds and used verified source citations.
 - Analysis `6c5ceb9b-c16c-42a1-b114-d62ec12e1008` recorded 7,691 input and 1,913 output tokens. This excludes Cognee indexing and embedding usage; it is not a dollar-cost report.
 - Cognee retained the dataset after restart. Reusing its completed index took 69 ms without an add/cognify call; a scoped search returned an exact original passage in 2.613 seconds. Its graph contained 47 nodes and 98 edges.
 - Automated fixtures cover twenty documents across two projects and a shared scope, withdrawal, source changes, failure recovery, immutable evidence, scoped retrieval, OAuth rotation, and signed webhook handling. This is not yet a retrieval-quality benchmark on twenty real company documents.
 - Local-export ingestion, the ephemeral Notion command, fixed demonstration rules, and demo tabs have been retired. Existing source documents and stored analysis/review history remain untouched.
-
-The next content step is to register actual Notion specifications and approve them in Memory. The next deployment steps are company-owned credentials, HTTPS callbacks, webhook subscriptions, and an operations-owned backup/restore exercise. Setup and operating instructions are in `BRAIN-AGENTS.md`, `NOTION-MCP.md`, and `COGNEE.md`.
 
 ## Decisions carried forward
 
@@ -25,20 +25,18 @@ The next content step is to register actual Notion specifications and approve th
 - Preserve original source content and its language. Treat document instructions as data, never as instructions to the ingestion service.
 - Use portable containers and npm commands; no PowerShell-specific runtime dependency.
 
-## Current implementation
+## Current operating guides
 
-The application already has a TypeScript/Fastify API, a React dashboard, Docker packaging,
-SQLite analysis records, three ordered model roles, human reviews, and a graph of recorded references.
+| Guide                                            | Maintained contract                                                               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------- |
+| [Brain setup and HTTP analyses](BRAIN-AGENTS.md) | Startup, project scope, commit analysis and human review.                         |
+| [Brain MCP](BRAIN-MCP.md)                        | Agent tools, project context and before-commit submissions over a known baseline. |
+| [Notion connection and sources](NOTION-MCP.md)   | OAuth, recursive subpages, approval policies and synchronization.                 |
+| [Cognee operations](COGNEE.md)                   | Indexing, retrieval, persistent storage and provider configuration.               |
 
-Brain owns the durable Notion MCP connection, registered source policies, immutable captures,
-and synchronization jobs. Cognee owns the derived index. The dashboard's configured analysis
-uses its Git README and a narrow hook-file scope. Notion pages are registered explicitly;
-linked child pages are not silently included.
-
-The HTTP analysis endpoint accepts `projectId`, `commit`, optional `baseCommit`, and
-an optional feature description. It reads a configured server-side checkout. CI must
-make those commits available first; automatic fetch and arbitrary patch uploads are
-not implemented. A deployed server cannot read a developer's local path.
+The server preserves immutable captures and validates exact citation ranges. Current
+source approvals and service availability are shown in Brain; they are not tracked
+in this historical record.
 
 ## Implemented architecture
 
@@ -101,18 +99,6 @@ Native installation remains possible, and a managed Cognee service is an alterna
 the company prefers outsourced operations. This plan selects self-hosted Docker to fit
 the existing project and future Linux deployment.
 
-## Completed implementation
-
-- Persistent Notion OAuth, encrypted credentials, renewal, and administrator controls are described in [Notion setup](NOTION-MCP.md).
-- Registered project/shared sources use explicit approval, immutable captures, a durable single-worker queue, and versioned indexes. Unchanged generations are reused; failed or withdrawn generations do not become current evidence. See [Cognee operations](COGNEE.md).
-- Scoped retrieval feeds the three existing analysis roles. Mandatory specifications are supplied in full; optional specifications use retrieved excerpts with original line numbers. Citations must match a supplied line, full captures remain preserved, and historical human decisions stay contextual. See [the agent contract](BRAIN-AGENTS.md#a-developer-agent-or-ci-calls-brain).
-- Memory, Settings, project analyses, and the graph expose source status and distinguish recorded evidence from extracted relations. The graph never grants publication or project approval.
-- Manual sync, polling, and signed Notion/GitHub receivers share the durable queue. Webhooks request a fresh read, not a paid analysis. Provider subscriptions remain deployment work; MCP OAuth does not create them. See [webhook setup](NOTION-MCP.md#synchronization-and-optional-webhooks).
-- Local-export ingestion, demo rules/routes/tabs, temporary capture commands, and the export mount are removed. The portable launcher is `scripts/start-brain.mjs`. Original documents, historical captures, analyses, and review revisions remain preserved.
-
-The automated checks and the small real pilot are summarized above. They do not replace
-the broader evaluation and operational verification below.
-
 ## Evaluation and release gates
 
 Before broader use, evaluate approximately twenty approved real documents across two
@@ -146,6 +132,6 @@ Remaining company and deployment inputs:
 - A decision on whether all team members may access the same corpus or need distinct document permissions.
 - An owner for persistence, backups, dependency updates, and any optional commercial storage choice.
 
-Next content validation: the dashboard reads a real approved Notion specification,
-indexes it in containerized Cognee, retrieves a cited passage for a small feature change,
-and preserves that evidence across a restart and a later document edit.
+Remaining corpus evaluation should include a real approved Notion specification,
+its index in containerized Cognee, a cited passage for a small feature change,
+and preservation of that evidence across a restart and a later document edit.

@@ -5,7 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { AnalysisResults } from '../ui/src/components/brain/AnalysisResults';
 import { AnalysisSetup } from '../ui/src/components/brain/AnalysisSetup';
 import { ReviewDossier } from '../ui/src/components/brain/ReviewDossier';
-import type { Analysis, Finding, Project } from '../ui/src/components/brain/types';
+import { CitationEvidence, citationGroups } from '../ui/src/components/brain/CitationEvidence';
+import type { Analysis, BrainSource, Finding, Project } from '../ui/src/components/brain/types';
 
 const finding: Finding = {
   id: 'finding',
@@ -157,7 +158,6 @@ test('running setup locks editable scope while allowing navigation to the active
   }
   assert.match(html, /View running analysis/);
   assert.match(html, /Uncommitted edits are not included/);
-  assert.match(html, /<details class="brain-agents-scope">/);
 });
 
 test('historical dossiers retain evidence and decisions without offering a new approval', () => {
@@ -196,4 +196,119 @@ test('historical dossiers retain evidence and decisions without offering a new a
   const current = renderToStaticMarkup(<ReviewDossier {...props} reviewAllowed={true} />);
   assert.match(current, /Revise your review/);
   assert.match(current, /Save review/);
+});
+
+function capturedSource(content: string, status: BrainSource['status'] = 'observed'): BrainSource {
+  return {
+    id: 'source',
+    kind: 'code',
+    title: 'hook.js',
+    path: 'hook.js',
+    revision: 'captured',
+    status,
+    topic: '',
+    summary: '',
+    importedAt: '',
+    content,
+    lines: content.split('\n').length,
+  };
+}
+
+test('submitted analyses identify the snapshot and cannot retry by silently reviewing the baseline commit', () => {
+  const submission = { id: 'snapshot-123', baselineCommit: 'a'.repeat(40), paths: ['hook.js'] };
+  const completed = results({ ...analysis, commit: submission.baselineCommit, submission });
+  assert.match(completed, /Submitted snapshot snapshot-123/);
+  assert.match(completed, /Only supplied edits are included/);
+  const failed = results({ ...analysis, status: 'failed', submission });
+  assert.match(failed, /Resubmit the working-copy files through Brain MCP/);
+  assert.doesNotMatch(failed, /Reuse this setup/);
+});
+
+test('historical citations show complete paragraphs and group code with clearly marked context', () => {
+  const source = capturedSource('const payload = {\n  branch,\n  ticket,\n};\nsend(payload);');
+  const citations = [
+    { sourceId: source.id, line: 2, quote: '  branch,' },
+    { sourceId: source.id, line: 3, quote: '  ticket,' },
+    { sourceId: source.id, line: 5, quote: 'send(payload);' },
+  ];
+  const [group] = citationGroups(citations, [source]);
+  assert.deepEqual(
+    group.lines.map((line) => line.number),
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(
+    group.lines.filter((line) => line.cited).map((line) => line.number),
+    [2, 3, 5],
+  );
+  const html = renderToStaticMarkup(
+    <CitationEvidence citations={citations} sources={[source]} onOpenSource={() => {}} />,
+  );
+  assert.equal((html.match(/Open captured source/g) ?? []).length, 1);
+  assert.match(html, /Other lines are surrounding context/);
+  assert.match(html, /const payload/);
+
+  const spec = capturedSource(
+    '1. Unrelated requirement.\n2. Send summaries\n   without raw arguments.\n3. Another requirement.',
+    'published',
+  );
+  const [paragraph] = citationGroups(
+    [{ sourceId: spec.id, line: 2, quote: '2. Send summaries' }],
+    [spec],
+  );
+  assert.deepEqual(
+    paragraph.lines.map((line) => line.number),
+    [2, 3],
+  );
+});
+
+test('multiline evidence renders exact ranges and keeps missing sections visibly separate', () => {
+  const source = capturedSource('first\nsecond\nhidden\nfourth\nfifth');
+  const citations = [
+    { sourceId: source.id, line: 1, endLine: 2, quote: 'first\nsecond' },
+    { sourceId: source.id, line: 4, endLine: 5, quote: 'fourth\nfifth' },
+  ];
+  const [group] = citationGroups(citations, [source]);
+  assert.deepEqual(
+    group.lines.map((line) => line.number),
+    [1, 2, 4, 5],
+  );
+  assert.ok(group.lines.every((line) => line.cited));
+  const html = renderToStaticMarkup(
+    <CitationEvidence citations={citations} sources={[source]} onOpenSource={() => {}} />,
+  );
+  assert.match(html, /Omitted lines/);
+  assert.doesNotMatch(html, /<code>hidden<\/code>|surrounding context/);
+  const [fallback] = citationGroups(citations, []);
+  assert.deepEqual(fallback.lines, group.lines);
+});
+
+test('the result states the rule, actual specification coverage and static review limits', () => {
+  const source = capturedSource('Send summaries only.', 'published');
+  source.title = 'README.md';
+  const rule = {
+    id: 'R1',
+    statement: 'Keep raw arguments out of the activity payload.',
+    scope: 'Hook payload',
+    citation: { sourceId: source.id, line: 1, endLine: 1, quote: source.content! },
+  };
+  const html = results({
+    ...analysis,
+    sources: [source],
+    requirements: [rule],
+    findings: [
+      {
+        ...finding,
+        requirementId: rule.id,
+        outcome: 'aligned',
+        decision: rule.citation,
+        question: 'Generic confirmation question',
+      },
+    ],
+  });
+  assert.match(html, /No code or tests were executed/);
+  assert.match(html, /Requirements taken from<\/dt><dd>README.md/);
+  assert.match(html, /Requirement being checked/);
+  assert.match(html, /How the code relates to the requirement/);
+  assert.match(html, /Keep raw arguments out of the activity payload/);
+  assert.doesNotMatch(html, /Generic confirmation question|ANALYSIS NOTE/);
 });

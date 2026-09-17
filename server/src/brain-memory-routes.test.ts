@@ -1,10 +1,9 @@
+import { fixtureGit } from './brain/testing/git.js';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import Fastify from 'fastify';
 import { MemoryService } from './brain/memory/service.js';
@@ -249,30 +248,12 @@ test('Notion webhook enqueues only registered pages and deduplicates durably acr
 
 test('GitHub webhook synchronizes only explicitly mapped registered project sources', async (t) => {
   const setup = await fixture(t);
-  const git = async (...args: string[]) => {
-    const result = await promisify(execFile)('git', ['-C', setup.root, ...args], {
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: brainConfig.git.timeoutMs,
-      maxBuffer: brainConfig.git.maxBufferBytes,
-    });
-    return result.stdout.trim();
-  };
+  const git = fixtureGit(setup.root);
   const specification = 'Keep hook summaries free of raw command arguments.\n';
   await writeFile(resolve(setup.root, 'README.md'), specification);
   await git('init');
   await git('add', 'README.md');
-  await git(
-    '-c',
-    'user.name=Brain test',
-    '-c',
-    'user.email=brain@example.com',
-    '-c',
-    'commit.gpgsign=false',
-    'commit',
-    '-m',
-    'Add webhook specification',
-  );
+  await git('commit', '-m', 'Add webhook specification');
   const commit = await git('rev-parse', 'HEAD');
   const send = (repository: string, delivery = 'delivery-1') => {
     const body = JSON.stringify({

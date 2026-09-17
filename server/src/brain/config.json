@@ -79,12 +79,16 @@
     "labelCharacters": 36
   },
   "ui": {
-    "pollIntervalMs": 2000
+    "pollIntervalMs": 2000,
+    "citationContextLines": 12
   },
   "client": {
     "requestTimeoutMs": 15000,
     "pollIntervalMs": 1500,
     "completionGraceMs": 60000
+  },
+  "mcp": {
+    "maxRequestBytes": 500000
   },
   "launcher": {
     "shutdownTimeoutMs": 10000,

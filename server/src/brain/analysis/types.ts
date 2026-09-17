@@ -14,6 +14,7 @@ export type Project = {
 export type Citation = {
   sourceId: string;
   line: number;
+  endLine?: number;
   quote: string;
 };
 
@@ -68,6 +69,7 @@ export type AnalysisRun = {
   commit?: string;
   baseCommit?: string;
   feature?: string;
+  submission?: { id: string; baselineCommit: string; paths: string[] };
   retrieval?: Omit<RetrievedEvidence, 'sources'>;
   requestTimeoutMs?: number;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
@@ -85,6 +87,8 @@ export type AnalysisRun = {
   findings: Finding[];
   changedFiles: string[];
 };
+
+export type SubmittedFile = { path: string; content: string | null };
 
 export type AgentRole = 'reader' | 'comparison' | 'arbitration';
 

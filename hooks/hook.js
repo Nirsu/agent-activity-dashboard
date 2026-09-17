@@ -68,7 +68,12 @@ function clientName(provider) {
 // Reduce the tool identifier itself to a safe activity summary.
 function safeToolSummary(toolName) {
   if (!toolName || typeof toolName !== 'string') return undefined;
-  if (toolName === 'Bash' || toolName === 'exec_command' || toolName === 'write_stdin') {
+  if (
+    toolName === 'Bash' ||
+    toolName === 'exec_command' ||
+    toolName === 'shell_command' ||
+    toolName === 'write_stdin'
+  ) {
     return 'Terminal command';
   }
   if (toolName === 'apply_patch' || toolName === 'Edit' || toolName === 'Write') {

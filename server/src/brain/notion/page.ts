@@ -1,4 +1,5 @@
 import { normalizeNotionPageId } from './page-id.js';
+import { notionPageReferences } from './page-references.js';
 
 export type NotionPage = {
   pageId: string;
@@ -8,6 +9,9 @@ export type NotionPage = {
   properties: Record<string, unknown>;
   editedAt?: string;
   raw: string;
+  parentPageId?: string;
+  childPages?: { pageId: string; title: string }[];
+  childrenComplete?: boolean;
 };
 
 export class NotionError extends Error {
@@ -25,6 +29,19 @@ export function normalizePageId(value: string): string {
   } catch {
     throw new NotionError('Use a valid Notion page URL or page ID.', 400);
   }
+}
+
+function referencePageId(url: string) {
+  return normalizePageId(url.replace(/^\{\{(.*)\}\}$/, '$1'));
+}
+
+function childPageReferences(content: string) {
+  const children = new Map<string, { pageId: string; title: string }>();
+  for (const reference of notionPageReferences(content)) {
+    const pageId = normalizePageId(reference.url);
+    children.set(pageId, { pageId, title: reference.title });
+  }
+  return [...children.values()];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,6 +86,9 @@ export function parseNotionPage(
       'Notion could not fetch the page. Check page access and workspace permissions.',
     );
   }
+  let truncated =
+    result.truncated === true ||
+    (isRecord(result.structuredContent) && result.structuredContent.truncated === true);
   const raw = result.content
     .filter((block) => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
     .map((block) => {
@@ -76,6 +96,7 @@ export function parseNotionPage(
       try {
         const payload: unknown = JSON.parse(text);
         if (isRecord(payload) && typeof payload.text === 'string') {
+          truncated ||= payload.truncated === true;
           return payload.text;
         }
       } catch {
@@ -107,6 +128,8 @@ export function parseNotionPage(
     );
   }
   const editedAt = properties.last_edited_time;
+  const metadata = page[2].slice(0, page[2].indexOf('<content>'));
+  const parentUrl = metadata.match(/<ancestor-path>[\s\S]*?<parent-page\s+url="([^"]+)"/)?.[1];
   return {
     pageId,
     title: properties.title,
@@ -116,5 +139,11 @@ export function parseNotionPage(
     editedAt:
       typeof editedAt === 'string' && Number.isFinite(Date.parse(editedAt)) ? editedAt : undefined,
     raw,
+    parentPageId: parentUrl ? referencePageId(parentUrl) : undefined,
+    childPages: childPageReferences(content),
+    childrenComplete:
+      !truncated &&
+      !/<unknown\b/.test(content) &&
+      !/"truncated"\s*:\s*true|truncated="true"/.test(raw),
   };
 }

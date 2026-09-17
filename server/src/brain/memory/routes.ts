@@ -3,9 +3,8 @@ import { brainConfig } from '../config.js';
 import { fail } from '../analysis/validation.js';
 import { normalizePageId } from '../notion/page.js';
 import type { MemoryService } from './service.js';
-import type { SourceRegistration } from './types.js';
+import type { SourcePolicy } from './types.js';
 
-type SourcePolicy = Pick<SourceRegistration, 'projectIds' | 'shared' | 'mandatory' | 'approval'>;
 type NewSource = SourcePolicy & { pageId: string; title?: string };
 
 export function registerMemoryRoutes(
@@ -23,7 +22,10 @@ export function registerMemoryRoutes(
     shared: { type: 'boolean' },
     mandatory: { type: 'boolean' },
     approval: { type: 'string', enum: ['draft', 'approved', 'withdrawn'] },
+    includeSubpages: { type: 'boolean' },
+    autoApproveSubpages: { type: 'boolean' },
   };
+  const requiredPolicy = ['projectIds', 'shared', 'mandatory', 'approval'];
   const idParams = {
     type: 'object',
     required: ['id'],
@@ -39,7 +41,7 @@ export function registerMemoryRoutes(
         body: {
           type: 'object',
           additionalProperties: false,
-          required: ['pageId', ...Object.keys(policyProperties)],
+          required: ['pageId', ...requiredPolicy],
           properties: {
             ...policyProperties,
             pageId: { type: 'string', maxLength: brainConfig.projects.maxLocalPathCharacters },
@@ -65,12 +67,17 @@ export function registerMemoryRoutes(
         body: {
           type: 'object',
           additionalProperties: false,
-          required: Object.keys(policyProperties),
+          required: requiredPolicy,
           properties: policyProperties,
         },
       },
     },
     (request) => service.update(request.params.id, request.body),
+  );
+  app.post<{ Params: { id: string } }>(
+    '/api/brain/memory/sources/:id/approve-subpages',
+    { preHandler: requireAdmin, schema: { params: idParams } },
+    (request) => service.approveSubpages(request.params.id),
   );
   app.post<{ Body: { sourceId?: string } }>(
     '/api/brain/memory/sync',

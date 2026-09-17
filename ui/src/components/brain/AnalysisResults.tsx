@@ -1,5 +1,6 @@
 import { formatDate, statusLabels } from './presentation';
-import { CitationButton, ReviewDossier } from './ReviewDossier';
+import { ReviewDossier } from './ReviewDossier';
+import { CitationEvidence } from './CitationEvidence';
 import type { Analysis, AnalysisRun, Finding, OpenSource } from './types';
 
 export function AnalysisResults({
@@ -97,14 +98,18 @@ export function AnalysisResults({
           {selectedRun && ['failed', 'interrupted'].includes(selectedRun.status) && (
             <div className="brain-agents-stopped">
               <p>This analysis did not finish. No result can be used as a completed review.</p>
-              <button
-                className="brain-button"
-                type="button"
-                disabled={locked}
-                onClick={onPrepareRetry}
-              >
-                Reuse this setup
-              </button>
+              {selectedRun.submission ? (
+                <p>Resubmit the working-copy files through Brain MCP to retry this analysis.</p>
+              ) : (
+                <button
+                  className="brain-button"
+                  type="button"
+                  disabled={locked}
+                  onClick={onPrepareRetry}
+                >
+                  Reuse this setup
+                </button>
+              )}
             </div>
           )}
           {selectedRun?.feature && (
@@ -143,6 +148,7 @@ export function AnalysisResults({
                 </p>
               )}
               <AnalysisSources analysis={detail} onOpenSource={onOpenSource} />
+              {detail.status === 'succeeded' && <AnalysisCoverage analysis={detail} />}
               {detail.status === 'succeeded' && !detail.findings.length && (
                 <div className="brain-empty">
                   <h3>
@@ -198,6 +204,13 @@ export function AnalysisResults({
                     {finding && (
                       <ReviewDossier
                         finding={finding}
+                        requirement={detail.requirements.find((requirement) =>
+                          finding.requirementId
+                            ? requirement.id === finding.requirementId
+                            : requirement.citation.sourceId === finding.decision.sourceId &&
+                              requirement.citation.line === finding.decision.line &&
+                              requirement.citation.quote === finding.decision.quote,
+                        )}
                         sources={detail.sources}
                         reviewAllowed={detail.current && detail.status === 'succeeded'}
                         reviewKey={detail.id}
@@ -261,7 +274,10 @@ function AnalysisProgress({ run }: { run: AnalysisRun }) {
       </strong>
       {run.commit && (
         <small title={run.commit}>
-          Commit {run.commit.slice(0, 12)}
+          {run.submission
+            ? `Submitted snapshot ${run.submission.id.slice(0, 12)} · base`
+            : 'Commit'}{' '}
+          {run.commit.slice(0, 12)}
           {run.baseCommit && ` · from ${run.baseCommit.slice(0, 12)}`}
         </small>
       )}
@@ -339,6 +355,50 @@ function OutcomeSummary({ findings }: { findings: Finding[] }) {
   );
 }
 
+function AnalysisCoverage({ analysis }: { analysis: Analysis }) {
+  const specificationIds = new Set(analysis.requirements.map((item) => item.citation.sourceId));
+  const specifications = analysis.sources.filter((source) => specificationIds.has(source.id));
+  const code = analysis.sources.filter((source) => source.status === 'observed');
+  return (
+    <section className="brain-analysis-coverage" aria-label="Analysis coverage">
+      <h3>What this analysis covers</h3>
+      <p>AI review of captured code. No code or tests were executed by this analysis.</p>
+      {analysis.submission && (
+        <p>
+          Agent-submitted change over baseline {analysis.submission.baselineCommit.slice(0, 12)}.
+          Only supplied edits are included; Brain cannot verify the caller's full working directory.
+        </p>
+      )}
+      <dl>
+        <div>
+          <dt>Code examined</dt>
+          <dd>{code.map((source) => source.title).join(', ') || 'No code captured'}</dd>
+        </div>
+        <div>
+          <dt>Requirements taken from</dt>
+          <dd>
+            {specifications.map((source) => source.title).join(', ') ||
+              'No applicable requirements'}
+          </dd>
+        </div>
+        <div>
+          <dt>Coverage</dt>
+          <dd>
+            {analysis.requirements.length} extracted requirements. Findings apply only to this
+            scope, not every project or company obligation.
+          </dd>
+        </div>
+      </dl>
+      {analysis.scope && (
+        <details>
+          <summary>Requested scope</summary>
+          <p>{analysis.scope}</p>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function AnalysisSources({
   analysis,
   onOpenSource,
@@ -377,8 +437,8 @@ function AnalysisSources({
             <article key={requirement.id}>
               <h3>{requirement.statement}</h3>
               <p>{requirement.scope}</p>
-              <CitationButton
-                citation={requirement.citation}
+              <CitationEvidence
+                citations={[requirement.citation]}
                 sources={analysis.sources}
                 onOpenSource={onOpenSource}
               />

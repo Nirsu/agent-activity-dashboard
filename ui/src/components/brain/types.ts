@@ -14,7 +14,8 @@ export type BrainSource = {
   origin?: { properties: Record<string, unknown>; revision?: string; raw?: string };
 };
 
-export type Citation = { sourceId: string; line: number; quote: string };
+export type Citation = { sourceId: string; line: number; endLine?: number; quote: string };
+export type Requirement = { id: string; statement: string; scope: string; citation: Citation };
 export type OpenSource = (sourceId: string, line?: number) => void;
 export type SourceSelection = { source: BrainSource; line?: number };
 export type Review = {
@@ -54,6 +55,7 @@ export type AnalysisRun = {
   commit?: string;
   baseCommit?: string;
   feature?: string;
+  submission?: { id: string; baselineCommit: string; paths: string[] };
   retrieval?: {
     datasets: string[];
     sourceIds: string[];
@@ -73,9 +75,10 @@ export type AnalysisRun = {
   findingCount: number;
 };
 export type Analysis = AnalysisRun & {
+  scope?: string;
   sources: BrainSource[];
   findings: Finding[];
-  requirements: { id: string; statement: string; scope: string; citation: Citation }[];
+  requirements: Requirement[];
   current: boolean;
 };
 export type AnalysesState = {

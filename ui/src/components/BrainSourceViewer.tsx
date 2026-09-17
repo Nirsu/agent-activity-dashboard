@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { notionReadingMarkdown, notionSubpageTitle } from './brain/notionMarkdown';
 import type { BrainSource } from './brain/types';
 
 const sourceGroups = {
@@ -39,13 +40,15 @@ export default function BrainSourceViewer({
   const sourceRevision =
     source.kind === 'code' ? (source.origin?.revision ?? source.revision) : source.revision;
   const revisionLabel =
-    source.kind === 'notion'
-      ? 'Notion snapshot'
-      : source.kind === 'review'
-        ? 'Recorded decision'
-        : source.origin?.revision || source.status === 'observed'
-          ? 'Git commit'
-          : 'Captured revision';
+    source.origin?.properties.captureMode === 'agent-submitted'
+      ? 'Submitted snapshot'
+      : source.kind === 'notion'
+        ? 'Notion snapshot'
+        : source.kind === 'review'
+          ? 'Recorded decision'
+          : source.origin?.revision || source.status === 'observed'
+            ? 'Git commit'
+            : 'Captured revision';
   useEffect(() => {
     const reader = dialog.current;
     const previousOverflow = document.documentElement.style.overflow;
@@ -78,11 +81,38 @@ export default function BrainSourceViewer({
               Illustration: {alt || 'image not loaded'}
             </span>
           ),
-          a: ({ href, children }) =>
+          a: ({ href, title, children }) =>
             /^https?:\/\//i.test(href ?? '') ? (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children} ↗
-              </a>
+              source.kind === 'notion' && title === notionSubpageTitle ? (
+                <a
+                  className="brain-subpage-link"
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open subpage in Notion"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="22"
+                    height="22"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M8 13h8M8 17h5" />
+                  </svg>
+                  <span className="brain-subpage-name">
+                    <span className="brain-subpage-label">Subpage</span>
+                    <span>{children}</span>
+                  </span>
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ) : (
+                <a href={href} target="_blank" rel="noreferrer">
+                  {children} ↗
+                </a>
+              )
             ) : (
               <span>{children}</span>
             ),
@@ -93,10 +123,13 @@ export default function BrainSourceViewer({
           ),
         }}
       >
-        {(source.content ?? '').replace(/^<\/?aside>\s*$/gm, '')}
+        {(source.kind === 'notion'
+          ? notionReadingMarkdown(source.content ?? '')
+          : (source.content ?? '')
+        ).replace(/^<\/?aside>\s*$/gm, '')}
       </Markdown>
     ),
-    [source.content],
+    [source.content, source.kind],
   );
   function closeReader() {
     dialog.current?.close();

@@ -26,6 +26,9 @@ export function memorySourceStatus(source: MemorySource) {
 }
 
 export function memorySourceExplanation(source: MemorySource) {
+  if (source.approvalBeforeRemoval) {
+    return 'Excluded because its branch was disabled or the page left its parent. Previous evidence is preserved. Synchronize the parent to rediscover it.';
+  }
   if (source.status === 'ready' || source.approval === 'withdrawn') {
     return '';
   }

@@ -1,10 +1,16 @@
 import { lazy, Suspense, useState } from 'react';
 import { MemorySourceForm } from './brain/MemorySourceForm';
-import { formatDate, memorySourceExplanation, memorySourceStatus } from './brain/presentation';
+import { formatDate } from './brain/presentation';
+import { MemorySourceCard } from './brain/MemorySourceCard';
 import { useBrainMemory } from './brain/useBrainMemory';
-import { canSyncSource, filterMemorySources, sourceViews } from './brain/memoryView';
+import {
+  canSyncSource,
+  filterMemorySources,
+  orderMemorySources,
+  sourceViews,
+} from './brain/memoryView';
 import type { SourceView } from './brain/memoryView';
-import type { MemorySource, MemoryState } from './brain/memoryTypes';
+import type { MemoryState } from './brain/memoryTypes';
 import './BrainMemory.css';
 
 const BrainSourceViewer = lazy(() => import('./BrainSourceViewer'));
@@ -16,7 +22,7 @@ export default function BrainMemory() {
   const [view, setView] = useState<SourceView>('all');
   const [editing, setEditing] = useState<string | null>(null);
   const { state } = memory;
-  const sources = filterMemorySources(state?.sources ?? [], query, scope, view);
+  const sources = orderMemorySources(filterMemorySources(state?.sources ?? [], query, scope, view));
   const activeJobs =
     state?.jobs.filter((job) => job.status === 'queued' || job.status === 'running') ?? [];
   const readyCount =
@@ -205,115 +211,16 @@ export default function BrainMemory() {
             </div>
           ) : (
             <div className="brain-memory-sources">
-              {sources.map((source) => {
-                const syncing =
-                  source.status === 'syncing' ||
-                  activeJobs.some((job) => job.sourceId === source.id);
-                const isEditing = editing === source.id;
-                return (
-                  <article
-                    key={source.id}
-                    className={`brain-memory-source${isEditing ? ' editing' : ''}`}
-                    aria-label={source.title}
-                  >
-                    <div className="brain-memory-source-main">
-                      <SourceSummary source={source} state={state} />
-                      <button
-                        className="brain-button brain-memory-read"
-                        aria-label={`Read snapshot: ${source.title}`}
-                        disabled={!source.currentSourceId || memory.loadingSource}
-                        onClick={() =>
-                          source.currentSourceId && void memory.openSource(source.currentSourceId)
-                        }
-                        title={
-                          !source.currentSourceId
-                            ? 'A snapshot becomes available after the first successful capture.'
-                            : undefined
-                        }
-                      >
-                        Read snapshot ↗
-                      </button>
-                    </div>
-                    {source.error && (
-                      <p className="brain-memory-inline-error" role="status">
-                        {source.error}
-                      </p>
-                    )}
-                    {memorySourceExplanation(source) && (
-                      <p className="brain-memory-help">{memorySourceExplanation(source)}</p>
-                    )}
-                    <div className="brain-memory-source-footer">
-                      <p className="brain-memory-version">
-                        {source.lastSyncedAt
-                          ? `Synced ${formatDate(source.lastSyncedAt)}`
-                          : 'No snapshot yet'}
-                        {source.revision && (
-                          <>
-                            {' '}
-                            · <code title={source.revision}>{source.revision.slice(0, 12)}</code>
-                          </>
-                        )}
-                      </p>
-                      <div className="brain-memory-actions">
-                        <button
-                          className="brain-memory-text-button"
-                          disabled={
-                            memory.busy || syncing || !canSyncSource(source, state.notion.connected)
-                          }
-                          onClick={() => void memory.sync(source.id)}
-                        >
-                          {syncing
-                            ? 'Syncing…'
-                            : source.status === 'failed'
-                              ? 'Retry sync'
-                              : 'Sync'}
-                        </button>
-                        {source.kind !== 'review' && (
-                          <button
-                            className="brain-memory-text-button"
-                            aria-label={`Source settings: ${source.title}`}
-                            disabled={memory.busy || (editing !== null && !isEditing)}
-                            aria-expanded={isEditing}
-                            onClick={() => {
-                              setEditing(isEditing ? null : source.id);
-                              memory.dismissError();
-                            }}
-                          >
-                            {isEditing ? 'Close settings' : 'Settings'}
-                          </button>
-                        )}
-                        {source.url && /^https?:\/\//.test(source.url) && (
-                          <a href={source.url} target="_blank" rel="noreferrer">
-                            {source.kind === 'notion' ? 'Notion' : 'Original'} ↗
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                    {isEditing && (
-                      <MemorySourceForm
-                        key={source.id}
-                        source={source}
-                        projects={state.projects}
-                        busy={memory.busy}
-                        saveError={memory.error}
-                        adminRequired={memory.adminRequired}
-                        onSave={({ projectIds, shared, mandatory, approval }) =>
-                          memory.updateSource(source.id, {
-                            projectIds,
-                            shared,
-                            mandatory,
-                            approval,
-                          })
-                        }
-                        onCancel={() => {
-                          setEditing(null);
-                          memory.dismissError();
-                        }}
-                      />
-                    )}
-                  </article>
-                );
-              })}
+              {sources.map((source) => (
+                <MemorySourceCard
+                  key={source.id}
+                  source={source}
+                  state={state}
+                  memory={memory}
+                  editing={editing}
+                  onEdit={setEditing}
+                />
+              ))}
             </div>
           )}
           {state.jobs.length > 0 && (
@@ -395,35 +302,6 @@ function MemoryHealth({ state, readyCount }: { state: MemoryState; readyCount: n
       {!state.cognee.available && state.cognee.reason && (
         <p className="brain-memory-inline-error">{state.cognee.reason}</p>
       )}
-    </div>
-  );
-}
-
-function SourceSummary({ source, state }: { source: MemorySource; state: MemoryState }) {
-  return (
-    <div className="brain-memory-source-info">
-      <div className="brain-memory-source-heading">
-        <span className="brain-eyebrow">
-          {source.kind === 'review'
-            ? 'HUMAN DECISION'
-            : source.kind === 'notion'
-              ? 'NOTION'
-              : 'GIT'}
-        </span>
-        <span className={`brain-memory-status ${source.status}`}>{memorySourceStatus(source)}</span>
-      </div>
-      <h3>{source.title}</h3>
-      <div className="brain-memory-tags">
-        <span>
-          {source.shared
-            ? 'Shared with all projects'
-            : source.projectIds
-                .map((id) => state.projects.find((project) => project.id === id)?.name ?? id)
-                .join(' · ')}
-        </span>
-        {source.mandatory && source.approval === 'approved' && <span>Required reference</span>}
-        {source.status === 'failed' && <span>{source.approval}</span>}
-      </div>
     </div>
   );
 }

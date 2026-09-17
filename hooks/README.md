@@ -49,6 +49,9 @@ is ignored. For a local POC:
 
 Codex batches OTel export, so hooks provide the immediate live state while OTel
 adds structured API, approval, result, model, and usage events.
+Both providers use the same normalized event model. Do not scrape private agent
+transcripts or local databases as an alternative ingestion channel. An unavailable
+dashboard must not interrupt the developer's agent.
 
 ## Config (env, optional)
 

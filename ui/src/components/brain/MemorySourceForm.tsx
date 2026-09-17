@@ -25,6 +25,10 @@ export function MemorySourceForm({
   const [shared, setShared] = useState(source?.shared ?? false);
   const [mandatory, setMandatory] = useState(source?.mandatory ?? false);
   const [approval, setApproval] = useState<SourceApproval>(source?.approval ?? 'draft');
+  const [includeSubpages, setIncludeSubpages] = useState(source?.includeSubpages ?? false);
+  const [autoApproveSubpages, setAutoApproveSubpages] = useState(
+    source?.autoApproveSubpages ?? false,
+  );
   const [error, setError] = useState('');
   const messageId = useId();
   const feedback = useRef<HTMLParagraphElement>(null);
@@ -60,6 +64,9 @@ export function MemorySourceForm({
           shared,
           mandatory,
           approval,
+          ...(source?.kind === 'git' || source?.kind === 'review'
+            ? {}
+            : { includeSubpages, autoApproveSubpages }),
         });
         if (saved) {
           onCancel();
@@ -83,7 +90,7 @@ export function MemorySourceForm({
             </label>
           </>
         )}
-        <fieldset disabled={source?.kind === 'git'}>
+        <fieldset disabled={source?.kind === 'git' || Boolean(source?.parentSourceId)}>
           <legend>Use for</legend>
           <label className="brain-memory-checkbox">
             <input
@@ -127,9 +134,18 @@ export function MemorySourceForm({
             changed here.
           </p>
         )}
+        {source?.parentSourceId && (
+          <p className="brain-memory-help">
+            Project scope and subpage discovery follow the root page. This page can be approved or
+            withdrawn individually.
+            {source.autoApproveSubpages &&
+              ' Automatic approval will approve drafts again on synchronization; choose Withdrawn to exclude this page.'}
+          </p>
+        )}
         <label>
           Approval
           <select
+            disabled={Boolean(source?.approvalBeforeRemoval)}
             value={approval}
             onChange={(event) => setApproval(event.target.value as SourceApproval)}
           >
@@ -145,6 +161,45 @@ export function MemorySourceForm({
               ? 'Use this reference in analyses after it has been indexed.'
               : 'Exclude this source from future analyses. Previous evidence is kept.'}
         </p>
+        {(!source || source.kind === 'notion') && !source?.parentSourceId && (
+          <fieldset>
+            <legend>Subpages</legend>
+            <label className="brain-memory-checkbox">
+              <input
+                type="checkbox"
+                checked={includeSubpages}
+                onChange={(event) => {
+                  setIncludeSubpages(event.target.checked);
+                  if (!event.target.checked) {
+                    setAutoApproveSubpages(false);
+                  }
+                }}
+              />
+              Include subpages
+            </label>
+            <p className="brain-memory-help">
+              Discover nested pages and capture each one separately in the same project scope.
+              Turning this off excludes the discovered branch and keeps previous evidence.
+            </p>
+            {includeSubpages && (
+              <>
+                <label className="brain-memory-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={autoApproveSubpages}
+                    onChange={(event) => setAutoApproveSubpages(event.target.checked)}
+                  />
+                  Automatically approve all subpages
+                </label>
+                <p className="brain-memory-help">
+                  {autoApproveSubpages
+                    ? 'Existing and future discovered subpages will be approved and indexed automatically. Explicitly withdrawn pages stay excluded. Indexing can use paid AI calls.'
+                    : 'New subpages are captured as drafts. Approve them individually or together after discovery. Existing approvals are kept.'}
+                </p>
+              </>
+            )}
+          </fieldset>
+        )}
         <label className="brain-memory-checkbox">
           <input
             type="checkbox"

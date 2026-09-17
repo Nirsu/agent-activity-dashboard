@@ -116,6 +116,8 @@ test('portable developer client reports scoped findings, no conclusion and techn
         id: 'finding-1',
         title: 'Check summary',
         outcome: 'difference',
+        requirementId: 'R1',
+        explanation: 'The captured payload contains raw tool arguments.',
         decision: citation,
         evidence: [citation],
         question: 'Does the summary contain arguments?',
@@ -184,6 +186,10 @@ test('portable developer client reports scoped findings, no conclusion and techn
     const summary = JSON.parse(stdout.slice(stdout.indexOf('{')));
     assert.equal(summary.coverage, 'scoped_requirements_checked');
     assert.equal(summary.requirementCount, 1);
+    assert.equal(summary.analysisMethod, 'static_code_review');
+    assert.deepEqual(summary.requirements, result.requirements);
+    assert.equal(summary.results[0].requirementId, 'R1');
+    assert.equal(summary.results[0].explanation, result.findings[0].explanation);
     assert.equal(summary.humanReviewRequired, true);
     assert.deepEqual(summary.results[0].decision, citation);
     assert.equal(summary.retrieval.memoryVersion, 'generation-1');

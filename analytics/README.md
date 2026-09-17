@@ -43,16 +43,24 @@ Run it nightly; it refreshes `out/latest-dora.json`. **€ per PR** is joined fr
 dashboard's cost ledger (`server/data/cost-ledger.jsonl`) by ticket key. Full
 definitions and the code-volume caveat: [`metrics-spec.md`](./metrics-spec.md).
 
+The current server defaults to **60 days** of normalized history (`RETENTION_DAYS`
+in `server/src/config.ts`). The original measurement contract still mentions 30
+days; that discrepancy needs a source-owner decision before deployment. This
+operating guide does not amend the measurement contract or the frozen baseline.
+
+The live board keeps metric labels visible, with tooltips for detail, so their
+meaning remains accessible on touch devices. Code volume remains context only.
+
 ## 3. Time log
 
 ```bash
 cd analytics/timelog
-node timelog.mjs add --task "Adhésion form validation" --est 180 --actual 95 \
+node timelog.mjs add --task "Membership form validation" --est 180 --actual 95 \
      --ticket ABC-412 --who dev1 --friction "hallucinated a deprecated API; 15m to catch"
 node timelog.mjs summary
 ```
 
 `--est` / `--actual` in minutes: estimate **without** AI vs actual **with** AI. Data
-in `timelog.csv` (git-ignored). The paired numbers are the causal evidence; the
-friction notes are where the real product feedback lives.
-```
+in `timelog.csv` (git-ignored). These pairs compare estimates with observed time;
+they do not establish that AI caused a difference. Keep friction notes to explain
+rework, interruptions and uncertainty in the original estimate.

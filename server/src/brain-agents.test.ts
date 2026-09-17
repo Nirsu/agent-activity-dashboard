@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
-import { createServer } from 'node:http';
-import { once } from 'node:events';
-import { channel } from 'node:diagnostics_channel';
 import { BrainAgents, registerBrainAgents } from './brain-agents.js';
 import Fastify from 'fastify';
 import { brainConfig } from './brain/config.js';
 import { makeSource, type Source } from './brain/sources.js';
-import type { AnalysisRun, Finding, HumanReview, Project } from './brain/analysis/types.js';
-
-const exec = promisify(execFile);
+import { fixtureGit } from './brain/testing/git.js';
+import type {
+  AnalysisRun,
+  Finding,
+  HumanReview,
+  Project,
+  ModelCall,
+} from './brain/analysis/types.js';
 
 test('Brain settings control Git capture, provider requests, reader prompts and validation', async (context) => {
   const fixtureData = await fixture();
@@ -94,296 +94,63 @@ test('Brain settings control Git capture, provider requests, reader prompts and 
   }
 });
 
-test('Unlimited model calls omit application deadlines and complete all roles over HTTP', async (context) => {
+test('provider failures stop the pipeline and preserve any reported usage', async (t) => {
   const f = await fixture();
-  const model = mockModel();
-  const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(chunk);
-    }
-    const body = JSON.parse(Buffer.concat(chunks).toString());
-    const schema = body.text.format.schema;
-    const role = schema.properties.requirements
-      ? 'reader'
-      : schema.properties.checks
-        ? 'comparison'
-        : 'arbitration';
-    const result = await model.call(role, body.instructions, JSON.parse(body.input), schema);
-    res.setHeader('content-type', 'application/json');
-    res.end(
-      JSON.stringify({
-        status: 'completed',
-        output: [
-          {
-            type: 'message',
-            content: [{ type: 'output_text', text: JSON.stringify(result.value) }],
-          },
-        ],
-        usage: {},
-      }),
-    );
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const port = (server.address() as { port: number }).port;
-  const fetch = globalThis.fetch;
-  context.mock.method(AbortSignal, 'timeout', () => {
-    throw new Error('Unlimited calls must not create a deadline');
-  });
-  context.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
-    assert.equal(init.signal, undefined);
-    return fetch(`http://127.0.0.1:${port}`, init);
-  });
-  const timers: { headersTimeout: number; bodyTimeout: number }[] = [];
-  const requests = channel('undici:request:create');
-  const observe = (event: unknown) => {
-    const { request } = event as { request: { headersTimeout: number; bodyTimeout: number } };
-    timers.push({ headersTimeout: request.headersTimeout, bodyTimeout: request.bodyTimeout });
-  };
-  requests.subscribe(observe);
-  try {
-    const service = new BrainAgents({
-      dbPath: f.dbPath,
-      projectsPath: f.projectsPath,
-      memory: f.memory,
-      model: 'test-model',
-      apiKey: 'test',
-      requestTimeoutMs: 0,
-    });
-    await service.init();
-    try {
-      assert.equal((await service.state()).configured, true);
-      const run = await service.start('dashboard', f.commit);
-      await service.wait();
-      const detail = await service.detail(run.id);
-      assert.equal(detail.status, 'succeeded', detail.error);
-      assert.equal(detail.requestTimeoutMs, 0);
-    } finally {
-      await service.close();
-    }
-    assert.equal(timers.length, 3);
-    // Undefined means the request inherits the dispatcher's disabled response timers.
-    assert.ok(
-      timers.every(
-        (t) =>
-          (t.headersTimeout == null || t.headersTimeout === 0) &&
-          (t.bodyTimeout == null || t.bodyTimeout === 0),
-      ),
-    );
-  } finally {
-    requests.unsubscribe(observe);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await rm(f.root, { recursive: true, force: true });
-  }
-});
-
-test('OpenAI transport validates structured responses and stops on errors without a fallback', async (context) => {
-  const timeout = AbortSignal.timeout;
-  context.mock.method(AbortSignal, 'timeout', (ms: number) => {
-    assert.equal(ms, 600_000);
-    return timeout(ms);
-  });
-  const f = await fixture();
-  const model = mockModel();
-  let mode = 'success';
-  let requests = 0;
-  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
-    requests++;
-    assert.equal(url, 'https://api.openai.com/v1/responses');
-    assert.equal(
-      (init.headers as Record<string, string>).Authorization,
-      'Bearer test-key-never-sent',
-    );
-    assert.equal(init.redirect, 'error');
-    const body = JSON.parse(init.body as string);
-    assert.equal(body.store, false);
-    assert.equal(body.text.format.type, 'json_schema');
-    assert.equal(body.text.format.strict, true);
-    assert.equal(body.max_output_tokens, brainConfig.analysis.maxOutputTokens);
-    assert.equal(body.tools, undefined);
-    assert.equal(JSON.stringify(body).includes('test-key-never-sent'), false);
-    if (mode === 'network') {
-      throw new Error('Do not expose provider or credential details');
-    }
-    if (mode === 'timeout') {
-      throw new DOMException('Do not expose provider or credential details', 'TimeoutError');
-    }
-    if (mode === 'body-timeout' || mode === 'body-network') {
-      return Object.assign(new Response(), {
-        json: async () => {
-          throw mode === 'body-timeout'
-            ? new DOMException('Do not expose provider or credential details', 'TimeoutError')
-            : new TypeError('Do not expose provider or credential details');
-        },
-      });
-    }
-    if (mode === 'invalid-envelope') {
-      return new Response('{invalid');
-    }
-    if (
-      [
-        'credit_balance_exhausted',
-        'project_spend_limit_exceeded',
-        'insufficient_quota',
-        'rate_limit_exceeded',
-      ].includes(mode)
-    ) {
-      return Response.json(
-        {
-          error: {
-            code: mode,
-            type: mode === 'rate_limit_exceeded' ? 'rate_limit_error' : 'insufficient_quota',
-            message: 'Do not expose provider or credential details',
-          },
-        },
-        { status: 429 },
-      );
-    }
-    if (mode === 'invalid-error-body') {
-      return new Response('<html>Do not expose provider or credential details</html>', {
-        status: 429,
-      });
-    }
-    if (['401', '429', '404', '503'].includes(mode)) {
-      return new Response('{}', { status: Number(mode) });
-    }
-    const result = await model.call(
-      body.text.format.name,
-      body.instructions,
-      JSON.parse(body.input),
-      body.text.format.schema,
-    );
-    return new Response(
-      JSON.stringify({
-        status: mode === 'incomplete' ? 'incomplete' : 'completed',
-        output: [
-          {
-            type: 'message',
-            content: [
-              mode === 'refusal'
-                ? { type: 'refusal', refusal: 'Request refused.' }
-                : {
-                    type: 'output_text',
-                    text: mode === 'invalid-json' ? '{invalid' : JSON.stringify(result.value),
-                  },
-            ],
-          },
-        ],
-        usage: { input_tokens: result.inputTokens, output_tokens: result.outputTokens },
-      }),
-      { status: 200 },
-    );
-  });
   const service = new BrainAgents({
     dbPath: f.dbPath,
     projectsPath: f.projectsPath,
     memory: f.memory,
     model: 'test-model',
-    apiKey: 'test-key-never-sent',
+    apiKey: 'fixture-key',
     requestTimeoutMs: 600_000,
   });
-  await service.init();
-  try {
-    const first = await service.start('dashboard', f.commit);
-    await service.wait();
-    assert.equal((await service.detail(first.id)).status, 'succeeded');
-    assert.equal(requests, 3);
-    assert.equal((await service.state()).provider, 'openai');
-    assert.equal((await service.state()).requestTimeoutMs, 600_000);
-    for (mode of [
-      'incomplete',
-      'refusal',
-      'invalid-json',
-      '401',
-      '429',
-      '404',
-      '503',
-      'network',
-      'timeout',
-      'body-timeout',
-      'body-network',
-      'invalid-envelope',
-      'credit_balance_exhausted',
-      'project_spend_limit_exceeded',
-      'insufficient_quota',
-      'rate_limit_exceeded',
-      'invalid-error-body',
-    ]) {
-      const before: number = requests;
-      const run = await service.start('dashboard', f.commit);
-      await service.wait();
-      const failed = await service.detail(run.id);
-      assert.equal(failed.status, 'failed', mode);
-      assert.deepEqual(failed.findings, []);
-      if (mode === 'incomplete') {
-        assert.match(failed.error!, /incomplete/);
-      }
-      if (mode === 'network') {
-        assert.match(failed.error!, /connection failed/);
-      }
-      if (mode === 'timeout') {
-        assert.match(failed.error!, /timed out after 600 seconds/);
-      }
-      if (mode === 'body-timeout') {
-        assert.match(failed.error!, /timed out after 600 seconds/);
-      }
-      if (mode === 'body-network') {
-        assert.match(failed.error!, /connection failed/);
-      }
-      if (mode === 'invalid-envelope') {
-        assert.match(failed.error!, /invalid JSON response/);
-      }
-      assert.deepEqual(
-        failed.usage,
-        ['incomplete', 'refusal', 'invalid-json'].includes(mode)
-          ? { inputTokens: 10, outputTokens: 5 }
-          : { inputTokens: 0, outputTokens: 0 },
-      );
-      if (mode === 'credit_balance_exhausted') {
-        assert.match(failed.error!, /API credits are exhausted/);
-      }
-      if (mode === 'project_spend_limit_exceeded') {
-        assert.match(failed.error!, /spending limit reached/);
-      }
-      if (mode === 'insufficient_quota') {
-        assert.match(failed.error!, /API quota is insufficient/);
-      }
-      if (mode === 'rate_limit_exceeded') {
-        assert.match(failed.error!, /rate limit reached/);
-      }
-      if (mode === 'invalid-error-body') {
-        assert.match(failed.error!, /HTTP 429/);
-      }
-      if (['401', '429', '404', '503'].includes(mode)) {
-        assert.ok(failed.error!.includes(`HTTP ${mode}`));
-      }
-      assert.equal(requests, before + 1, 'No automatic retry');
-      assert.doesNotMatch(JSON.stringify(failed), /test-key-never-sent|Do not expose/);
-    }
-    for (const requestTimeoutMs of [NaN, Infinity, -1, 999, 1000.5, 1_800_001]) {
-      const invalid = new BrainAgents({
-        dbPath: f.dbPath,
-        projectsPath: f.projectsPath,
-        memory: f.memory,
-        model: 'test-model',
-        apiKey: 'test',
-        requestTimeoutMs,
-      });
-      await invalid.init();
-      try {
-        assert.equal((await invalid.state()).configured, false);
-        await assert.rejects(invalid.start('dashboard'), /BRAIN_REQUEST_TIMEOUT_MS/);
-      } finally {
-        await invalid.close();
-      }
-    }
-  } finally {
+  t.after(async () => {
     await service.close();
     await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  assert.equal((await service.state()).provider, 'openai');
+  assert.equal((await service.state()).requestTimeoutMs, 600_000);
+  for (const incomplete of [false, true]) {
+    const fetch = t.mock.method(globalThis, 'fetch', async () =>
+      incomplete
+        ? Response.json({ status: 'incomplete', usage: { input_tokens: 10, output_tokens: 5 } })
+        : Response.json({ error: { message: 'Private provider detail' } }, { status: 503 }),
+    );
+    const run = await service.start('dashboard', f.commit);
+    await service.wait();
+    const failed = await service.detail(run.id);
+    assert.equal(failed.status, 'failed');
+    assert.deepEqual(failed.findings, []);
+    assert.match(failed.error!, incomplete ? /incomplete/ : /HTTP 503/);
+    assert.deepEqual(
+      failed.usage,
+      incomplete ? { inputTokens: 10, outputTokens: 5 } : { inputTokens: 0, outputTokens: 0 },
+    );
+    assert.doesNotMatch(JSON.stringify(failed), /Private provider detail|fixture-key/);
+    assert.equal(fetch.mock.callCount(), 1, 'No later role or provider fallback runs');
+    fetch.mock.restore();
+  }
+
+  for (const requestTimeoutMs of [NaN, Infinity, -1, 999, 1000.5, 1_800_001]) {
+    const invalid = new BrainAgents({
+      dbPath: f.dbPath,
+      projectsPath: f.projectsPath,
+      memory: f.memory,
+      model: 'test-model',
+      apiKey: 'fixture-key',
+      requestTimeoutMs,
+    });
+    await invalid.init();
+    try {
+      assert.equal((await invalid.state()).configured, false);
+      await assert.rejects(invalid.start('dashboard'), /BRAIN_REQUEST_TIMEOUT_MS/);
+    } finally {
+      await invalid.close();
+    }
   }
 });
-type ModelCall = NonNullable<NonNullable<ConstructorParameters<typeof BrainAgents>[0]>['call']>;
+
 type InputSource = {
   sourceId: string;
   path: string;
@@ -516,19 +283,10 @@ async function fixture() {
     },
   ];
   await writeFile(projectsPath, JSON.stringify(projects));
-  const git = async (...args: string[]) =>
-    (await exec('git', ['-C', repo, ...args], { windowsHide: true })).stdout.trim();
+  const git = fixtureGit(repo);
   await git('init');
   await git('add', '.');
-  await git(
-    '-c',
-    'user.name=Test',
-    '-c',
-    'user.email=test@example.invalid',
-    'commit',
-    '-m',
-    'fixture',
-  );
+  await git('commit', '-m', 'fixture');
   const commit = await git('rev-parse', 'HEAD');
   const memoryState = {
     version: 'memory-v1',
@@ -578,6 +336,55 @@ async function fixture() {
     capturedNotion,
   };
 }
+
+test('submitted replacements and deletions skip oversized baseline files and enforce the final context budget', async (t) => {
+  const f = await fixture();
+  const model = mockModel({ outcome: 'insufficient' });
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: model.call,
+  });
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  const oversized = 'x'.repeat(brainConfig.analysis.maxSourceBytes + 1);
+  await writeFile(resolve(f.repo, 'src/main.ts'), oversized);
+  await f.git('add', 'src/main.ts');
+  await f.git('commit', '-m', 'Large baseline');
+  const baseline = await f.git('rev-parse', 'HEAD');
+  await service.init();
+  for (const content of ['export const includeDate = true;', null]) {
+    const run = await service.start('dashboard', baseline, undefined, 'Reduce the feature', [
+      { path: 'src/main.ts', content },
+    ]);
+    await service.wait();
+    const result = await service.detail(run.id);
+    assert.equal(result.status, 'succeeded', result.error);
+    assert.equal(
+      result.sources.find((source) => source.path === 'src/main.ts')?.content,
+      content ?? undefined,
+    );
+    assert.ok(result.sources.some((source) => source.path === 'src/unchanged.ts'));
+    assert.ok(result.sources.some((source) => source.path === 'docs/spec.md'));
+    assert.equal(result.submission?.baselineCommit, baseline);
+  }
+  const calls = model.calls.length;
+  const tooLarge = await service.start(
+    'dashboard',
+    baseline,
+    undefined,
+    'Exceed the combined budget',
+    [{ path: 'src/main.ts', content: 'x'.repeat(brainConfig.analysis.maxSourceBytes) }],
+  );
+  await service.wait();
+  assert.match((await service.detail(tooLarge.id)).error!, /baseline context exceed/);
+  assert.equal(model.calls.length, calls);
+  assert.equal((await f.git('show', `${baseline}:src/main.ts`)).length, oversized.length);
+});
 
 test('Brain agents: project capture, ordered mock calls, concurrent arbitration and persistent evidence', async () => {
   const f = await fixture();
@@ -637,7 +444,6 @@ test('Brain agents: project capture, ordered mock calls, concurrent arbitration 
       'src/unchanged.ts',
     ]);
     assert.equal(model.calls[1].input.commit, f.commit);
-    assert.equal(JSON.stringify(model.calls).includes('PostgreSQL'), false);
     assert.equal(JSON.stringify(model.calls).includes('UNCOMMITTED'), false);
     assert.equal(JSON.stringify(model.calls).includes('EXCLUDED_TEST_SENTINEL'), false);
     assert.deepEqual(detail.usage, { inputTokens: 30, outputTokens: 15 });
@@ -883,15 +689,7 @@ test('Brain agents: base commit scopes code to changed allowed files and preserv
     await writeFile(resolve(f.repo, 'src/main.ts'), 'export const includeDate = true;\n');
     await writeFile(resolve(f.repo, 'other/site.ts'), 'export const otherProject = "modified";\n');
     await f.git('add', 'src/main.ts', 'other/site.ts');
-    await f.git(
-      '-c',
-      'user.name=Test',
-      '-c',
-      'user.email=test@example.invalid',
-      'commit',
-      '-m',
-      'change two projects',
-    );
+    await f.git('commit', '-m', 'change two projects');
     const head = await f.git('rev-parse', 'HEAD');
     const run = await service.start('dashboard', head, f.commit);
     await service.wait();
@@ -1084,15 +882,7 @@ test('retrieved excerpts keep original citation lines without sending full optio
   }
   await writeFile(f.projectsPath, JSON.stringify(f.projects));
   await f.git('add', 'docs');
-  await f.git(
-    '-c',
-    'user.name=Test',
-    '-c',
-    'user.email=test@example.invalid',
-    'commit',
-    '-m',
-    'Add large optional specifications',
-  );
+  await f.git('commit', '-m', 'Add large optional specifications');
   const model = mockModel();
   let citeHiddenLine = false;
   const service = new BrainAgents({

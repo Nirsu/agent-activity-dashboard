@@ -6,6 +6,10 @@ export type SourceRegistration = {
   title: string;
   url?: string;
   pageId?: string;
+  includeSubpages?: boolean;
+  autoApproveSubpages?: boolean;
+  parentSourceId?: string;
+  approvalBeforeRemoval?: 'draft' | 'approved';
   git?: { projectId: string; path: string };
   projectIds: string[];
   shared: boolean;
@@ -21,6 +25,11 @@ export type SourceRegistration = {
   properties?: Record<string, unknown>;
   reviewContent?: string;
 };
+
+export type SourcePolicy = Pick<
+  SourceRegistration,
+  'projectIds' | 'shared' | 'mandatory' | 'approval' | 'includeSubpages' | 'autoApproveSubpages'
+>;
 
 export type SyncJob = {
   id: string;

@@ -16,6 +16,7 @@ const stringSchema = { type: 'string' };
 const citationSchema = recordSchema({
   sourceId: stringSchema,
   line: { type: 'integer' },
+  endLine: { type: 'integer' },
   quote: stringSchema,
 });
 

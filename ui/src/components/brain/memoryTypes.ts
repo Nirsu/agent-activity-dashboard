@@ -6,6 +6,10 @@ export type MemorySource = {
   title: string;
   url?: string;
   pageId?: string;
+  includeSubpages?: boolean;
+  autoApproveSubpages?: boolean;
+  parentSourceId?: string;
+  approvalBeforeRemoval?: 'draft' | 'approved';
   projectIds: string[];
   shared: boolean;
   mandatory: boolean;
@@ -51,4 +55,6 @@ export type SourceRegistration = {
   shared: boolean;
   mandatory: boolean;
   approval: SourceApproval;
+  includeSubpages?: boolean;
+  autoApproveSubpages?: boolean;
 };

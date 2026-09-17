@@ -46,9 +46,11 @@ It is not automatically promoted to a dashboard specification.
 - Brain invokes only `notion-fetch` and the optional `notion-get-self` identity
   tool. This restricts Brain's behavior; it does not claim the OAuth grant itself
   is read-only or restricted to one page.
-- Linked child pages, databases, attachments, and embedded documents are not
-  recursively fetched. Register each required page explicitly. A source capture
-  retains the original content and metadata, including their language.
+- Enable **Include subpages** on a registered root page to discover nested Notion
+  page blocks. Each subpage keeps its own capture, citations, and parent relation.
+  Project/shared scope follows the root. Ordinary links, page mentions, database
+  rows, attachments, and embedded documents are outside this discovery scope.
+  A source capture retains the original content and metadata, including their language.
 - Changing the encryption key without migration makes existing credentials
   unreadable. Restore the original key or explicitly disconnect and reconnect.
 - When switching to a company account, reconnect with that identity and verify
@@ -58,6 +60,31 @@ It is not automatically promoted to a dashboard specification.
 Adjustable request timeouts, authorization duration, and refresh lead time are
 in the shared `notionMcp` configuration. Secrets and the deployment callback stay
 in the server environment. The model analysis timeout is a separate setting.
+
+## Subpage approval
+
+Subpage discovery is off by default. Without **Automatically approve all subpages**,
+new subpages are captured as drafts. Review them individually, or use **Approve current
+subpages** to approve the existing draft descendants together without changing future policy.
+
+Enabling automatic approval approves existing and future discovered subpages and queues
+their Cognee indexing. The root can remain a draft container; its own approval is separate.
+Explicitly withdrawn pages stay excluded. Turning off automatic approval keeps existing
+approvals, while new pages return to draft. Descendants are optional references by default;
+their **Always include when approved** setting can be changed individually.
+
+Manual sync and periodic reconciliation discover newly added descendants. Unchanged content
+reuses its index. Removing a child from its parent, withdrawing a branch, or disabling discovery
+excludes the affected descendants from future analyses while preserving captured evidence.
+Rediscovery restores automatically excluded pages, but never an explicit manual withdrawal.
+Subpages inherit project changes from the root; independently registered pages in a conflicting
+scope cause a visible synchronization error instead of being silently reassigned.
+A page moved between registered parents in the same scope is reattached after Notion confirms
+its new parent. Captures and explicit withdrawals are preserved, regardless of parent sync order.
+
+Discovery uses the existing durable queue, source limit, and Notion connection. An inaccessible
+child, an unverifiable parent, or a truncated response is reported as an incomplete synchronization.
+No model is used to discover the hierarchy; indexing approved content can incur provider charges.
 
 ## Synchronization and optional webhooks
 
@@ -89,8 +116,9 @@ It rejects such handshakes and does not log their bodies.
 Subscribe to the relevant page events: `page.content_updated`,
 `page.properties_updated`, `page.created`, `page.deleted`, `page.undeleted`, and
 `page.moved`. Brain verifies `X-Notion-Signature` with HMAC-SHA256 over the exact
-received bytes. Only explicitly registered pages are queued; linked pages are
-not discovered through events. Withdrawn sources remain withdrawn.
+received bytes. Registered pages, including discovered subpages, can be queued.
+A newly created page is found on the next parent synchronization; an unknown event
+does not expand the registered project scope. Withdrawn sources remain withdrawn.
 
 ### GitHub
 
@@ -130,6 +158,7 @@ from an actual analysis separately after deployment.
 
 - [Build a Notion MCP client](https://developers.notion.com/guides/mcp/build-mcp-client)
 - [Supported MCP tools](https://developers.notion.com/guides/mcp/mcp-supported-tools)
+- [Notion page blocks and mentions](https://developers.notion.com/guides/data-apis/enhanced-markdown#page-and-database-references)
 - [Notion webhook setup and signature validation](https://developers.notion.com/reference/webhooks)
 - [Notion event types and delivery](https://developers.notion.com/reference/webhooks-events-delivery)
 - [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)

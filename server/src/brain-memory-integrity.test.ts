@@ -1,9 +1,8 @@
+import { fixtureGit } from './brain/testing/git.js';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import type { Project } from './brain/analysis/types.js';
 import { brainConfig } from './brain/config.js';
@@ -341,17 +340,13 @@ test('Git synchronization minimizes index content and reuses it across commits u
     brainConfig.cognee.indexRevision = previousRevision;
   });
   const f = await fixture(t);
-  const git = (args: string[]) =>
-    promisify(execFile)('git', ['-C', f.root, ...args], { encoding: 'utf8', windowsHide: true });
-  await git(['init']);
-  await git(['config', 'user.name', 'Memory test']);
-  await git(['config', 'user.email', 'memory-test@example.invalid']);
-  await git(['config', 'core.autocrlf', 'false']);
+  const git = fixtureGit(f.root);
+  await git('init');
   const secret = `sk-${'a'.repeat(30)}`;
   const raw = `# Specification\r\nOwner: Fixture owner\r\nToken: ${secret}\r\n-----BEGIN PRIVATE KEY-----\r\nfixture-only-key\r\n-----END PRIVATE KEY-----\r\nKeep summaries generic.\r\n`;
   await writeFile(resolve(f.root, 'SPEC.md'), raw);
-  await git(['add', 'SPEC.md']);
-  await git(['commit', '-m', 'Add fixture specification']);
+  await git('add', 'SPEC.md');
+  await git('commit', '-m', 'Add fixture specification');
   f.project.specs = [{ kind: 'git', path: 'SPEC.md' }];
   await writeFile(f.projectsPath, JSON.stringify([f.project]));
   await f.service.registerProjects();
@@ -368,8 +363,8 @@ test('Git synchronization minimizes index content and reuses it across commits u
   assert.equal(originalCapture.lines, raw.split('\n').length);
 
   await writeFile(resolve(f.root, 'feature.ts'), 'export const feature = true;\n');
-  await git(['add', 'feature.ts']);
-  await git(['commit', '-m', 'Change code without changing the specification']);
+  await git('add', 'feature.ts');
+  await git('commit', '-m', 'Change code without changing the specification');
   f.service.queue(registration.id);
   await f.service.wait();
   const current = f.service.store.source(registration.id)!;

@@ -14,7 +14,157 @@ import type {
   HumanReview,
   Project,
   ModelCall,
+  BrainActivity,
 } from './brain/analysis/types.js';
+
+test('Brain activity links work, reports each call once and keeps private evidence off the board', async (t) => {
+  const f = await fixture();
+  const previousPrices = process.env.MODEL_PRICING_JSON;
+  process.env.MODEL_PRICING_JSON = JSON.stringify({
+    test: { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+  });
+  const delivered = new Map<string, BrainActivity>();
+  let failDelivery = true;
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: mockModel().call,
+    onActivity: async (event) => {
+      if (event.kind === 'brain_model_call' && event.phase === 'completed' && failDelivery) {
+        failDelivery = false;
+        throw new Error('History temporarily unavailable');
+      }
+      delivered.set(event.id, event);
+    },
+  });
+  t.after(async () => {
+    await service.close();
+    if (previousPrices === undefined) {
+      delete process.env.MODEL_PRICING_JSON;
+    } else {
+      process.env.MODEL_PRICING_JSON = previousPrices;
+    }
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const correlation = {
+    workItemId: 'work-7',
+    ticket: 'HM-7',
+    originSessionId: 'session-7',
+    parentRunId: 'parent-7',
+  };
+  const run = await service.start(
+    'dashboard',
+    f.commit,
+    undefined,
+    'PRIVATE FEATURE TEXT',
+    undefined,
+    correlation,
+  );
+  await service.wait();
+  const board = await service.overview();
+  assert.equal(board.runs[0].id, run.id);
+  assert.deepEqual(board.runs[0].correlation, correlation);
+  assert.equal(board.runs[0].workItemId, 'work-7');
+  assert.equal(board.runs[0].callCount, 3);
+  assert.equal(board.runs[0].costStatus, 'estimated');
+  assert.ok(Math.abs(board.runs[0].costUsd! - 0.00012) < 1e-12);
+  const usageEvents = [...delivered.values()].filter(
+    (event) => event.kind === 'brain_model_call' && event.phase === 'completed',
+  );
+  assert.equal(usageEvents.length, 3);
+  assert.deepEqual(
+    usageEvents.map((event) => event.role),
+    ['reader', 'comparison', 'arbitration'],
+  );
+  assert.equal(
+    usageEvents.reduce((sum, event) => sum + event.inputTokens!, 0),
+    30,
+  );
+  assert.ok(usageEvents.every((event) => event.id.endsWith(':completed') && event.usageKnown));
+  const publicData = JSON.stringify([board, [...delivered.values()]]);
+  assert.doesNotMatch(
+    publicData,
+    /PRIVATE FEATURE TEXT|"sources"|"requirements"|"prompt"|"note"|"explanation"/,
+  );
+});
+
+test('a failed model connection remains unknown usage and unknown cost in Brain activity', async (t) => {
+  const f = await fixture();
+  const events: BrainActivity[] = [];
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: async () => {
+      throw new Error('Provider connection lost');
+    },
+    onActivity: async (event) => {
+      events.push(event);
+    },
+  });
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const run = await service.start('dashboard', f.commit);
+  await service.wait();
+  assert.equal((await service.detail(run.id)).status, 'failed');
+  const event = events.find((item) => item.kind === 'brain_model_call' && item.phase === 'failed')!;
+  assert.equal(event.usageKnown, false);
+  assert.equal(event.costUsd, null);
+  assert.equal((await service.overview()).runs[0].costUsd, null);
+});
+
+test('Brain HTTP accepts optional work identifiers and returns only board-safe analysis fields', async (t) => {
+  const f = await fixture();
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: mockModel().call,
+  });
+  const app = Fastify();
+  await registerBrainAgents(app, service);
+  t.after(async () => {
+    await app.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/brain/analyses',
+    payload: {
+      projectId: 'dashboard',
+      commit: f.commit,
+      workItemId: 'work-http',
+      ticket: 'HM-HTTP',
+      originSessionId: 'session-http',
+    },
+  });
+  assert.equal(response.statusCode, 202);
+  await service.wait();
+  const board = (await app.inject('/api/brain/activity')).json();
+  assert.equal(board.runs[0].workItemId, 'work-http');
+  assert.equal(board.runs[0].originSessionId, 'session-http');
+  assert.equal(board.runs[0].ticket, 'HM-HTTP');
+  assert.equal(board.runs[0].status, 'succeeded');
+  assert.equal(board.runs[0].sources, undefined);
+  assert.equal(board.runs[0].findings, undefined);
+  const invalid = await app.inject({
+    method: 'POST',
+    url: '/api/brain/analyses',
+    payload: {
+      projectId: 'dashboard',
+      ticket: 'HM\nINVALID',
+    },
+  });
+  assert.equal(invalid.statusCode, 400);
+});
 
 test('Brain settings control Git capture, provider requests, reader prompts and validation', async (context) => {
   const fixtureData = await fixture();

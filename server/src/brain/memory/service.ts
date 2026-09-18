@@ -49,6 +49,7 @@ export class MemoryService {
   private working: Promise<void> | null = null;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
+  private closing: Promise<void> | null = null;
   private indexing: Promise<unknown> = Promise.resolve();
   private readonly synchronization = new EventEmitter();
   private cogneeState = {
@@ -76,15 +77,17 @@ export class MemoryService {
         source.datasetId &&
         (source.indexVersion !== this.indexVersion || needsMinimization)
       ) {
-        this.store.saveSource({ ...source, status: 'pending' });
+        await this.store.saveSource({ ...source, status: 'pending' });
       }
     }
     if (this.options.schedule !== false) {
       this.timer = setInterval(() => {
-        this.queueAll();
+        void this.queueAll().catch(() => {
+          this.stopped = true;
+        });
       }, this.syncInterval());
       this.timer.unref();
-      this.pump();
+      this.store.afterCommit(() => this.pump());
     }
   }
 
@@ -96,33 +99,35 @@ export class MemoryService {
 
   async registerProjects() {
     const projects = await readProjects(this.options.projectsPath);
-    const active = new Set<string>();
-    for (const project of projects) {
-      for (const specification of project.specs.filter((spec) => spec.kind === 'git')) {
-        const id = `git:${sourceHash(`${project.id}:${specification.path}`)}`;
-        active.add(id);
-        const existing = this.store.source(id);
-        if (!existing) {
-          this.store.saveSource({
-            id,
-            kind: 'git',
-            title: specification.path,
-            git: { projectId: project.id, path: specification.path },
-            projectIds: [project.id],
-            shared: false,
-            mandatory: true,
-            approval: 'approved',
-            status: 'pending',
-          });
+    return this.store.transaction(async () => {
+      const active = new Set<string>();
+      for (const project of projects) {
+        for (const specification of project.specs.filter((spec) => spec.kind === 'git')) {
+          const id = `git:${sourceHash(`${project.id}:${specification.path}`)}`;
+          active.add(id);
+          const existing = this.store.source(id);
+          if (!existing) {
+            await this.store.saveSource({
+              id,
+              kind: 'git',
+              title: specification.path,
+              git: { projectId: project.id, path: specification.path },
+              projectIds: [project.id],
+              shared: false,
+              mandatory: true,
+              approval: 'approved',
+              status: 'pending',
+            });
+          }
         }
       }
-    }
-    for (const source of this.store.sources()) {
-      if (source.kind === 'git' && !active.has(source.id) && source.approval !== 'withdrawn') {
-        this.store.saveSource({ ...source, approval: 'withdrawn', status: 'withdrawn' });
+      for (const source of this.store.sources()) {
+        if (source.kind === 'git' && !active.has(source.id) && source.approval !== 'withdrawn') {
+          await this.store.saveSource({ ...source, approval: 'withdrawn', status: 'withdrawn' });
+        }
       }
-    }
-    return projects;
+      return projects;
+    });
   }
 
   async state() {
@@ -179,113 +184,126 @@ export class MemoryService {
       requireText(input.pageId, brainConfig.projects.maxLocalPathCharacters),
     );
     const id = `notion:${normalized}`;
-    if (this.store.source(id)) {
-      fail('This page is already registered. Edit its project scope instead.', 409);
-    }
-    if (this.store.sources().length >= brainConfig.synchronization.maxSources) {
-      fail('Source limit reached.');
-    }
-    const source: SourceRegistration = {
-      id,
-      kind: 'notion',
-      pageId: normalized,
-      title: input.title
-        ? requireText(input.title, brainConfig.analysis.maxTitleCharacters)
-        : 'Notion page',
-      url: `https://www.notion.so/${normalized}`,
-      projectIds: [...new Set(input.projectIds)],
-      shared: input.shared,
-      mandatory: input.mandatory,
-      approval: input.approval,
-      includeSubpages: input.includeSubpages ?? false,
-      autoApproveSubpages: input.autoApproveSubpages ?? false,
-      status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
-    };
-    this.store.saveSource(source);
-    if (source.approval !== 'withdrawn') {
-      this.queue(source.id);
-    }
-    return source;
+    return this.store.transaction(async () => {
+      if (this.store.source(id)) {
+        fail('This page is already registered. Edit its project scope instead.', 409);
+      }
+      if (this.store.sources().length >= brainConfig.synchronization.maxSources) {
+        fail('Source limit reached.');
+      }
+      const source: SourceRegistration = {
+        id,
+        kind: 'notion',
+        pageId: normalized,
+        title: input.title
+          ? requireText(input.title, brainConfig.analysis.maxTitleCharacters)
+          : 'Notion page',
+        url: `https://www.notion.so/${normalized}`,
+        projectIds: [...new Set(input.projectIds)],
+        shared: input.shared,
+        mandatory: input.mandatory,
+        approval: input.approval,
+        includeSubpages: input.includeSubpages ?? false,
+        autoApproveSubpages: input.autoApproveSubpages ?? false,
+        status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
+      };
+      await this.store.saveSource(source);
+      if (source.approval !== 'withdrawn') {
+        await this.queue(source.id);
+      }
+      return source;
+    });
   }
 
   async update(id: string, input: SourcePolicy) {
-    const source = this.store.source(id);
-    if (!source) {
-      fail('Memory source not found.', 404);
-    }
-    const policy = {
-      ...input,
-      includeSubpages: input.includeSubpages ?? source.includeSubpages ?? false,
-      autoApproveSubpages: input.autoApproveSubpages ?? source.autoApproveSubpages ?? false,
-    };
-    this.validatePolicy(policy, await readProjects(this.options.projectsPath));
-    if (source.kind !== 'notion' && (policy.includeSubpages || policy.autoApproveSubpages)) {
-      fail('Subpage settings only apply to Notion sources.');
-    }
-    if (source.parentSourceId) {
-      if (source.approvalBeforeRemoval) {
-        fail(
-          'This subpage is outside the selected branch. Synchronize its parent before approving it.',
-        );
+    const projects = await readProjects(this.options.projectsPath);
+    return this.store.transaction(async () => {
+      const source = this.store.source(id);
+      if (!source) {
+        fail('Memory source not found.', 404);
+      }
+      const policy = {
+        ...input,
+        includeSubpages: input.includeSubpages ?? source.includeSubpages ?? false,
+        autoApproveSubpages: input.autoApproveSubpages ?? source.autoApproveSubpages ?? false,
+      };
+      this.validatePolicy(policy, projects);
+      if (source.kind !== 'notion' && (policy.includeSubpages || policy.autoApproveSubpages)) {
+        fail('Subpage settings only apply to Notion sources.');
+      }
+      if (source.parentSourceId) {
+        if (source.approvalBeforeRemoval) {
+          fail(
+            'This subpage is outside the selected branch. Synchronize its parent before approving it.',
+          );
+        }
+        if (
+          policy.shared !== source.shared ||
+          [...policy.projectIds].sort().join(',') !== [...source.projectIds].sort().join(',') ||
+          policy.includeSubpages !== source.includeSubpages ||
+          policy.autoApproveSubpages !== source.autoApproveSubpages
+        ) {
+          fail(
+            'Subpages inherit their project and discovery settings. Edit the root page instead.',
+          );
+        }
       }
       if (
-        policy.shared !== source.shared ||
-        [...policy.projectIds].sort().join(',') !== [...source.projectIds].sort().join(',') ||
-        policy.includeSubpages !== source.includeSubpages ||
-        policy.autoApproveSubpages !== source.autoApproveSubpages
+        source.kind === 'git' &&
+        (input.shared ||
+          input.projectIds.length !== 1 ||
+          input.projectIds[0] !== source.git?.projectId)
       ) {
-        fail('Subpages inherit their project and discovery settings. Edit the root page instead.');
+        fail('Git specifications stay scoped to their registered repository project.');
       }
-    }
-    if (
-      source.kind === 'git' &&
-      (input.shared ||
-        input.projectIds.length !== 1 ||
-        input.projectIds[0] !== source.git?.projectId)
-    ) {
-      fail('Git specifications stay scoped to their registered repository project.');
-    }
-    const updated: SourceRegistration = {
-      ...source,
-      projectIds: [...new Set(input.projectIds)],
-      shared: input.shared,
-      mandatory: input.mandatory,
-      approval: input.approval,
-      includeSubpages: policy.includeSubpages,
-      autoApproveSubpages: policy.autoApproveSubpages,
-      status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
-    };
-    this.store.saveSource(updated);
-    if (updated.kind === 'notion') {
-      inheritSubpagePolicy(this.store, updated);
-    }
-    if (updated.approval !== 'withdrawn') {
-      this.queue(id);
-    }
-    return updated;
+      const updated: SourceRegistration = {
+        ...source,
+        projectIds: [...new Set(input.projectIds)],
+        shared: input.shared,
+        mandatory: input.mandatory,
+        approval: input.approval,
+        includeSubpages: policy.includeSubpages,
+        autoApproveSubpages: policy.autoApproveSubpages,
+        status: input.approval === 'withdrawn' ? 'withdrawn' : 'pending',
+      };
+      await this.store.saveSource(updated);
+      if (updated.kind === 'notion') {
+        await inheritSubpagePolicy(this.store, updated);
+      }
+      if (updated.approval !== 'withdrawn') {
+        await this.queue(id);
+      }
+      return updated;
+    });
   }
 
-  approveSubpages(id: string) {
-    const parent = this.store.source(id);
-    if (
-      !parent ||
-      parent.kind !== 'notion' ||
-      !parent.includeSubpages ||
-      parent.approval === 'withdrawn'
-    ) {
-      fail('Select an active Notion branch with subpages enabled.');
-    }
-    const drafts = subpagesOf(this.store.sources(), id).filter(
-      (source) => source.approval === 'draft',
-    );
-    for (const source of drafts) {
-      this.store.saveSource({ ...source, approval: 'approved', status: 'pending' });
-      this.queue(source.id);
-    }
-    return { approved: drafts.length };
+  async approveSubpages(id: string) {
+    return this.store.transaction(async () => {
+      const parent = this.store.source(id);
+      if (
+        !parent ||
+        parent.kind !== 'notion' ||
+        !parent.includeSubpages ||
+        parent.approval === 'withdrawn'
+      ) {
+        fail('Select an active Notion branch with subpages enabled.');
+      }
+      const drafts = subpagesOf(this.store.sources(), id).filter(
+        (source) => source.approval === 'draft',
+      );
+      for (const source of drafts) {
+        await this.store.saveSource({ ...source, approval: 'approved', status: 'pending' });
+        await this.queue(source.id);
+      }
+      return { approved: drafts.length };
+    });
   }
 
-  queue(sourceId: string) {
+  async queue(sourceId: string) {
+    return this.store.transaction(() => this.queueJob(sourceId));
+  }
+
+  private async queueJob(sourceId: string) {
     const source = this.store.source(sourceId);
     if (!source) {
       fail('Memory source not found.', 404);
@@ -297,7 +315,7 @@ export class MemoryService {
       .jobs()
       .find((job) => job.sourceId === sourceId && job.status === 'queued');
     if (queued) {
-      this.pump();
+      this.store.afterCommit(() => this.pump());
       return queued;
     }
     const job: SyncJob = {
@@ -307,17 +325,22 @@ export class MemoryService {
       requestedAt: new Date().toISOString(),
       attempts: 0,
     };
-    this.store.saveJob(job);
-    this.pump();
+    await this.store.saveJob(job);
+    this.store.afterCommit(() => this.pump());
     return job;
   }
 
-  queueAll() {
-    return this.store
+  async queueAll() {
+    const jobs: SyncJob[] = [];
+    for (const source of this.store
       .sources()
-      .filter((source) => source.approval !== 'withdrawn' && !source.parentSourceId)
-      .map((source) => this.queue(source.id))
-      .filter(Boolean);
+      .filter((source) => source.approval !== 'withdrawn' && !source.parentSourceId)) {
+      const job = await this.queue(source.id);
+      if (job) {
+        jobs.push(job);
+      }
+    }
+    return jobs;
   }
 
   private pump() {
@@ -417,7 +440,11 @@ export class MemoryService {
   private async synchronize(job: SyncJob) {
     let source = this.store.source(job.sourceId);
     if (!source || source.approval === 'withdrawn') {
-      this.store.saveJob({ ...job, status: 'succeeded', finishedAt: new Date().toISOString() });
+      await this.store.saveJob({
+        ...job,
+        status: 'succeeded',
+        finishedAt: new Date().toISOString(),
+      });
       return;
     }
     const policy = policyVersion(source);
@@ -428,11 +455,17 @@ export class MemoryService {
       attempts: job.attempts + 1,
       error: undefined,
     };
-    this.store.saveJob(job);
-    this.store.saveSource({ ...source, status: 'syncing', error: undefined });
     try {
+      await this.store.saveJob(job);
+      await this.store.transaction(async () => {
+        const current = this.store.source(source.id)!;
+        if (policy !== policyVersion(current)) {
+          fail('Source settings changed before capture. Synchronize the updated source.');
+        }
+        await this.store.saveSource({ ...current, status: 'syncing', error: undefined });
+      });
       const { capture, page } = await this.readSource(source);
-      this.store.saveCapture(capture);
+      await this.store.saveCapture(capture);
       if (policy !== policyVersion(this.store.source(source.id)!)) {
         fail('Source settings changed during capture. Synchronize the updated source.');
       }
@@ -447,37 +480,45 @@ export class MemoryService {
             this.options.notion.fetchPage(id),
           )
         : [];
-      const completed = this.store.source(source.id)!;
-      if (policy !== policyVersion(completed)) {
-        fail('Source settings changed during subpage discovery. Synchronize the updated source.');
-      }
-      this.store.saveSource({
-        ...completed,
-        title: source.title,
-        url: source.url,
-        properties: source.properties,
-        currentSourceId: capture.id,
-        datasetId,
-        indexVersion: this.indexVersion,
-        revision: capture.revision,
-        lastSyncedAt: new Date().toISOString(),
-        status: source.approval === 'approved' ? 'ready' : 'pending',
-        error: undefined,
+      await this.store.transaction(async () => {
+        const completed = this.store.source(source.id)!;
+        if (policy !== policyVersion(completed)) {
+          fail('Source settings changed during subpage discovery. Synchronize the updated source.');
+        }
+        await this.store.saveSource({
+          ...completed,
+          title: source.title,
+          url: source.url,
+          properties: source.properties,
+          currentSourceId: capture.id,
+          datasetId,
+          indexVersion: this.indexVersion,
+          revision: capture.revision,
+          lastSyncedAt: new Date().toISOString(),
+          status: source.approval === 'approved' ? 'ready' : 'pending',
+          error: undefined,
+        });
       });
-      this.store.saveJob({ ...job, status: 'succeeded', finishedAt: new Date().toISOString() });
+      await this.store.saveJob({
+        ...job,
+        status: 'succeeded',
+        finishedAt: new Date().toISOString(),
+      });
       for (const childId of children) {
-        this.queue(childId);
+        await this.queue(childId);
       }
     } catch (error) {
       const message =
         error instanceof Error && 'statusCode' in error
           ? error.message
           : 'Synchronization failed. Check the source connection and Cognee service.';
-      source = this.store.source(source.id)!;
-      if (source.approval !== 'withdrawn') {
-        this.store.saveSource({ ...source, status: 'failed', error: message });
-      }
-      this.store.saveJob({
+      await this.store.transaction(async () => {
+        const current = this.store.source(source.id)!;
+        if (policy === policyVersion(current) && current.approval !== 'withdrawn') {
+          await this.store.saveSource({ ...current, status: 'failed', error: message });
+        }
+      });
+      await this.store.saveJob({
         ...job,
         status: 'failed',
         finishedAt: new Date().toISOString(),
@@ -506,7 +547,7 @@ export class MemoryService {
     }
     const legacy = this.store.dataset(`${capture.id}:${this.indexVersion}`);
     if (legacy) {
-      this.store.saveDataset(bindingId, legacy);
+      await this.store.saveDataset(bindingId, legacy);
       return legacy;
     }
     const operation = this.indexing.then(async () => {
@@ -518,7 +559,7 @@ export class MemoryService {
         fail('Memory synchronization is stopping.');
       }
       const { datasetId } = await this.options.cognee.index(capture, `brain_${bindingId}`);
-      this.store.saveDataset(bindingId, datasetId);
+      await this.store.saveDataset(bindingId, datasetId);
       this.cogneeState = { configured: true, available: true, reason: '' };
       return datasetId;
     });
@@ -603,7 +644,7 @@ export class MemoryService {
         source.status === 'failed' ||
         (source.approval === 'approved' && source.status !== 'ready');
       if (needsSync && !pendingSources.has(source.id)) {
-        this.queue(source.id);
+        await this.queue(source.id);
       }
     }
     await this.waitForSources(new Set(synchronized.keys()));
@@ -635,7 +676,7 @@ export class MemoryService {
         fail('The analysis did not capture a required Git specification at its commit.');
       }
       const capture = makeCapture(registration, supplied.content, {}, supplied.revision);
-      this.store.saveCapture(capture);
+      await this.store.saveCapture(capture);
       const datasetId = await this.indexCapture(capture, registration.id);
       ready.push({ ...registration, currentSourceId: capture.id, datasetId, status: 'ready' });
     }
@@ -679,16 +720,25 @@ export class MemoryService {
       status: 'pending',
       reviewContent: `# Human review\n\nProject: ${run.projectName}\nAnalysis: ${run.id}\nCommit: ${run.commit}\n${run.submission ? `Submitted snapshot: ${run.submission.id}\nThe commit is its baseline, not the submitted code revision.\n` : ''}Decision: ${review.decision}\nRecorded at: ${review.at}\nReviewer: ${review.actor}\n\n${review.note}\n\nApplies to the cited analysis and captured code only. This record does not modify the authoritative specification.\nSource: ${finding.decision.sourceId}, line ${finding.decision.line}\n`,
     };
-    this.store.saveSource(source);
-    this.queue(id);
+    await this.store.saveSource(source);
+    await this.queue(id);
   }
 
-  async close() {
+  close() {
     this.stopped = true;
     this.synchronization.emit('progress');
     clearInterval(this.timer);
-    await this.working;
-    await this.indexing;
-    this.store.close();
+    this.closing ??= (async () => {
+      try {
+        await this.working;
+      } finally {
+        try {
+          await this.indexing;
+        } finally {
+          await this.store.close();
+        }
+      }
+    })();
+    return this.closing;
   }
 }

@@ -52,12 +52,14 @@ export default function BrainAgents() {
             commit={analyses.commit}
             baseCommit={analyses.baseCommit}
             feature={analyses.feature}
+            ticket={analyses.ticket}
             busy={analyses.busy}
             locked={analyses.locked}
             onSelectProject={analyses.selectProject}
             onCommitChange={analyses.setCommit}
             onBaseCommitChange={analyses.setBaseCommit}
             onFeatureChange={analyses.setFeature}
+            onTicketChange={analyses.setTicket}
             onStart={analyses.startAnalysis}
             onShowActiveRun={() => {
               analyses.showActiveRun();

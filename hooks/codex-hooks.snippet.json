@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]
@@ -52,7 +52,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]
@@ -63,7 +74,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AAD_PROVIDER=codex node /absolute/path/to/agent-activity-dashboard/hooks/hook.js",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/absolute/path/to/agent-activity-dashboard/hooks/codex-hook.js\"",
             "timeout": 3
           }
         ]

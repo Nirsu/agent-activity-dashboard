@@ -1,16 +1,15 @@
 # Merge into ~/.codex/config.toml. Codex ignores project-local OTel settings,
 # so telemetry must be configured at user or managed level.
+# Run agents:setup, select repositories and start agents:relay first.
 [otel]
 environment = "dev"
 log_user_prompt = false
-exporter = "otlp-http"
-metrics_exporter = "otlp-http"
 trace_exporter = "none"
 
 [otel.exporter."otlp-http"]
-endpoint = "http://localhost:4318/v1/logs"
+endpoint = "http://127.0.0.1:14318/v1/logs"
 protocol = "json"
 
 [otel.metrics_exporter."otlp-http"]
-endpoint = "http://localhost:4318/v1/metrics"
+endpoint = "http://127.0.0.1:14318/v1/metrics"
 protocol = "json"

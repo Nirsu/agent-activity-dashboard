@@ -245,11 +245,25 @@ test('a real MCP client discovers context, submits changes and reads preserved f
 
   const committed = await client.callTool({
     name: 'brain_start_analysis',
-    arguments: { projectId: 'dashboard', commit: baseline, feature: 'Protect hook arguments' },
+    arguments: {
+      projectId: 'dashboard',
+      commit: baseline,
+      feature: 'Protect hook arguments',
+      workItemId: 'work-mcp',
+      ticket: 'HM-42',
+      originSessionId: 'codex-mcp',
+      parentRunId: id,
+    },
   });
   await service.wait();
   const committedRun = await service.detail((committed.structuredContent as { id: string }).id);
   assert.equal(committedRun.submission, undefined);
+  assert.deepEqual(committedRun.correlation, {
+    workItemId: 'work-mcp',
+    ticket: 'HM-42',
+    originSessionId: 'codex-mcp',
+    parentRunId: id,
+  });
   assert.equal(committedRun.findings[0].outcome, 'aligned');
   const saved = await service.detail(id);
   assert.equal(saved.findings[0].outcome, 'difference');

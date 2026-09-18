@@ -93,10 +93,10 @@ export function registerMemoryRoutes(
         },
       },
     },
-    (request, reply) => {
+    async (request, reply) => {
       const jobs = request.body?.sourceId
-        ? [service.queue(request.body.sourceId)].filter(Boolean)
-        : service.queueAll();
+        ? [await service.queue(request.body.sourceId)].filter(Boolean)
+        : await service.queueAll();
       return reply.code(202).send({ jobs });
     },
   );

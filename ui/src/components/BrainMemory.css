@@ -377,11 +377,12 @@
 .brain-settings-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  align-items: start;
+  align-items: stretch;
   gap: 20px;
 }
 .brain-settings-card {
   display: grid;
+  align-content: start;
   gap: 18px;
 }
 .brain-settings-card > p,

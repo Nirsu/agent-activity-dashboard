@@ -7,11 +7,22 @@ Use French when discussing the work with the user unless they request otherwise.
 
 # Brain review
 
-When the user requests a Brain review from a coding conversation, follow
-`BRAIN-MCP.md`. Discover the project and read its references before implementation.
-For a before-commit review, submit the actual modified file contents through
-`brain_submit_change`, then poll `brain_get_analysis`. Preserve unrelated work,
-report unsupported scope, and leave exceptions and approvals to a human.
+Use Harmony Brain automatically for implementation work covered by a registered
+Brain project. Follow `BRAIN-MCP.md`; do not wait for the user to repeat this rule.
+Discover the project with `brain_list_projects` and read its approved references
+with `brain_get_project_context` before changing code in its allowed scope.
+After local checks, submit the actual modified file contents in that scope through
+`brain_submit_change` before committing or declaring the implementation ready.
+Use `brain_start_analysis` for a review of an existing commit instead. Poll the
+returned analysis ID with `brain_get_analysis`; do not start duplicate analyses.
+Resolve actionable findings and submit again only if the reviewed code changed.
+Preserve unrelated work and leave exceptions and approvals to a human.
+
+If Brain is unavailable, unconfigured, or does not cover the changed paths, report
+that limit and continue useful local work without claiming a Brain review passed.
+Do not expand project scope, send secrets, change specifications, or run a paid
+analysis on an unrelated feature to satisfy this rule. The current `dashboard`
+registration covers only safe tool summaries in `hooks/hook.js`.
 
 # Readability
 

@@ -40,6 +40,40 @@ codex mcp add harmony-brain --url https://brain.example.com/api/brain/mcp --bear
 agent `BRAIN_ADMIN_TOKEN`. Individual identities and per-project access control
 remain separate production work; this pilot uses a shared viewer credential.
 
+## Shared Claude Code authentication
+
+For Codex, use the authenticated registration above, or add
+`bearer_token_env_var = "BRAIN_ACCESS_TOKEN"` to the existing
+`[mcp_servers.harmony-brain]` entry with the shared HTTPS URL. Make the environment
+variable available to the process launching Codex desktop as well as the CLI.
+
+For Claude Code, a project-scoped `.mcp.json` can reference the same environment
+variable without storing a token in Git:
+
+```json
+{
+  "mcpServers": {
+    "harmony-brain": {
+      "type": "http",
+      "url": "https://agents.example.com/api/brain/mcp",
+      "headers": { "Authorization": "Bearer ${BRAIN_ACCESS_TOKEN}" }
+    }
+  }
+}
+```
+
+Merge this entry with the repository's existing MCP configuration. Remove the
+installer's unauthenticated user entry for this name with
+`claude mcp remove --scope user harmony-brain` when choosing this project-scoped
+configuration; check `/mcp` for the effective URL and authentication. Do not keep
+a conflicting local definition. Set `BRAIN_ACCESS_TOKEN` in the environment that
+launches Claude, restart it and approve the project's MCP configuration.
+See [Claude MCP scopes and environment expansion](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+
+The relay's `AAD_TOKEN` is the server's ingest credential. Brain's
+`BRAIN_ACCESS_TOKEN` is the viewer credential. Installing hooks or allowing a
+repository does not configure MCP authentication or grant Brain administration.
+
 ## Tools
 
 | Tool                        | Purpose                                                                                                                                    |

@@ -8,12 +8,14 @@ export function AnalysisSetup({
   commit,
   baseCommit,
   feature,
+  ticket = '',
   busy,
   locked,
   onSelectProject,
   onCommitChange,
   onBaseCommitChange,
   onFeatureChange,
+  onTicketChange,
   onStart,
   onShowActiveRun,
 }: {
@@ -23,12 +25,14 @@ export function AnalysisSetup({
   commit: string;
   baseCommit: string;
   feature: string;
+  ticket?: string;
   busy: boolean;
   locked: boolean;
   onSelectProject: (projectId: string) => void;
   onCommitChange: (commit: string) => void;
   onBaseCommitChange: (commit: string) => void;
   onFeatureChange: (feature: string) => void;
+  onTicketChange?: (ticket: string) => void;
   onStart: () => Promise<void>;
   onShowActiveRun: () => void;
 }) {
@@ -91,6 +95,19 @@ export function AnalysisSetup({
             </ul>
           </details>
         )}
+        <label htmlFor="brain-agent-ticket">Work ticket (optional)</label>
+        <input
+          id="brain-agent-ticket"
+          value={ticket}
+          onChange={(event) => onTicketChange?.(event.target.value)}
+          placeholder="HM-123"
+          maxLength={80}
+          disabled={locked}
+          pattern="[A-Z][A-Z0-9]+-[0-9]+"
+        />
+        <p className="brain-agents-help">
+          Use the same ticket as the coding session to connect its activity and analysis.
+        </p>
         <label htmlFor="brain-agent-feature">Feature or change to check (optional)</label>
         <textarea
           id="brain-agent-feature"

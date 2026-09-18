@@ -45,6 +45,11 @@ test('OpenAI sends a strict structured request and preserves response usage', as
       value,
       inputTokens: 10,
       outputTokens: 5,
+      usageKnown: true,
+      model: 'test-model',
+      responseId: undefined,
+      cachedInputTokens: undefined,
+      reasoningTokens: undefined,
     },
   );
 });
@@ -183,6 +188,11 @@ test('unlimited OpenAI calls disable both application and HTTP response deadline
     value,
     inputTokens: 10,
     outputTokens: 5,
+    usageKnown: true,
+    model: 'test-model',
+    responseId: undefined,
+    cachedInputTokens: undefined,
+    reasoningTokens: undefined,
   });
   assert.equal(timers.length, 1);
   // An absent request value inherits the dispatcher's disabled response timers.

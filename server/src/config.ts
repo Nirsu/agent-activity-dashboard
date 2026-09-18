@@ -7,8 +7,8 @@ import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function loadDotEnv(): void {
-  const envPath = resolve(__dirname, '../../.env');
+function loadDotEnv(filename: string): void {
+  const envPath = resolve(__dirname, '../..', filename);
   try {
     const raw = readFileSync(envPath, 'utf8');
     for (const line of raw.split('\n')) {
@@ -24,7 +24,8 @@ function loadDotEnv(): void {
     // no .env — defaults apply
   }
 }
-loadDotEnv();
+loadDotEnv('.env');
+loadDotEnv('.env.postgres.local');
 
 function num(name: string, fallback: number): number {
   const v = process.env[name];
@@ -45,6 +46,7 @@ export const config = {
   ringSize: num('RING_SIZE', 500),
   idleMs: num('IDLE_MS', 45_000),
   sessionTtlMs: num('SESSION_TTL_MS', 30 * 60_000),
+  codexMetadataDb: process.env.CODEX_METADATA_DB,
   retentionDays: num('RETENTION_DAYS', 60),
   // Pseudonymize identities (default on). Off only for a single-user local run.
   anonymize: bool('ANONYMIZE', true),
@@ -54,15 +56,6 @@ export const config = {
   ingestToken: process.env.INGEST_TOKEN,
   viewerToken: process.env.VIEWER_TOKEN,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
-  delivery: {
-    settingsPath: process.env.DELIVERY_SETTINGS_PATH ?? resolve(process.env.DATA_DIR ?? resolve(__dirname, '../data'), 'delivery/settings.json'),
-    secretsPath: process.env.DELIVERY_SECRETS_PATH ?? resolve(process.env.DATA_DIR ?? resolve(__dirname, '../data'), 'delivery/secrets.json'),
-    runsPath: process.env.DELIVERY_RUNS_PATH ?? resolve(process.env.DATA_DIR ?? resolve(__dirname, '../data'), 'delivery/runs.json'),
-    artifactsDir: process.env.DELIVERY_ARTIFACTS_DIR ?? resolve(process.env.DATA_DIR ?? resolve(__dirname, '../data'), 'delivery/artifacts'),
-    latestDoraPath: process.env.DELIVERY_LATEST_DORA_PATH ?? resolve(process.env.DATA_DIR ?? resolve(__dirname, '../data'), 'delivery/latest-success/latest-dora.json'),
-    extractorPath: process.env.DELIVERY_EXTRACTOR_PATH ?? resolve(__dirname, '../../analytics/baseline/extract.mjs'),
-    defaultGithubApiBaseUrl: process.env.DELIVERY_GITHUB_API_BASE_URL ?? 'https://api.github.com',
-  },
   jira: {
     baseUrl: process.env.JIRA_BASE_URL,
     email: process.env.JIRA_EMAIL,

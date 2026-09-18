@@ -32,6 +32,27 @@ export function createBrainMcp(service: BrainService) {
   const projectId = z.string().min(1).max(brainConfig.projects.maxIdCharacters);
   const feature = z.string().trim().min(1).max(brainConfig.analysis.maxTextCharacters);
   const commit = z.string().regex(/^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/);
+  const correlation = {
+    workItemId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(brainConfig.analysis.maxCorrelationCharacters)
+      .optional(),
+    ticket: z.string().trim().min(1).max(brainConfig.analysis.maxCorrelationCharacters).optional(),
+    originSessionId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(brainConfig.analysis.maxCorrelationCharacters)
+      .optional(),
+    parentRunId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(brainConfig.analysis.maxCorrelationCharacters)
+      .optional(),
+  };
 
   server.registerTool(
     'brain_list_projects',
@@ -69,7 +90,9 @@ export function createBrainMcp(service: BrainService) {
     {
       description:
         'Start a paid AI code review against approved project and shared specifications. Supply the full commit SHA, already available in the Brain server checkout. Uncommitted edits are excluded. Returns immediately; use brain_get_analysis to follow progress.',
-      inputSchema: z.object({ projectId, commit, baseCommit: commit.optional(), feature }).strict(),
+      inputSchema: z
+        .object({ projectId, commit, baseCommit: commit.optional(), feature, ...correlation })
+        .strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -84,6 +107,13 @@ export function createBrainMcp(service: BrainService) {
           input.commit,
           input.baseCommit,
           input.feature,
+          undefined,
+          {
+            workItemId: input.workItemId,
+            ticket: input.ticket,
+            originSessionId: input.originSessionId,
+            parentRunId: input.parentRunId,
+          },
         );
         return {
           id: run.id,
@@ -115,6 +145,7 @@ export function createBrainMcp(service: BrainService) {
           commit: run.commit,
           baseCommit: run.baseCommit,
           submission: run.submission,
+          correlation: run.correlation,
           status: run.status,
           stage: run.stage,
           error: run.error,
@@ -150,6 +181,7 @@ export function createBrainMcp(service: BrainService) {
           projectId,
           feature,
           baselineCommit: commit,
+          ...correlation,
           files: z
             .array(
               z
@@ -178,6 +210,12 @@ export function createBrainMcp(service: BrainService) {
           undefined,
           input.feature,
           input.files,
+          {
+            workItemId: input.workItemId,
+            ticket: input.ticket,
+            originSessionId: input.originSessionId,
+            parentRunId: input.parentRunId,
+          },
         );
         return {
           id: run.id,

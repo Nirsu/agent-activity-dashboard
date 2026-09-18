@@ -2,7 +2,7 @@
 // Claude Code / Codex hook -> Agent Activity Dashboard bridge.
 //
 // Reads the hook JSON on stdin, adds local git context (repo/branch/ticket),
-// and POSTs a lifecycle event to the dashboard's /activity endpoint.
+// and POSTs a lifecycle event to the local project-filtering relay.
 //
 // NEVER forwards prompt or tool content — only structural context. This script
 // must never block a tool call: it swallows all errors and always exits 0.
@@ -12,8 +12,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
-const DASHBOARD_URL = process.env.AAD_URL ?? 'http://localhost:4318';
+const DASHBOARD_URL = process.env.AAD_URL ?? 'http://127.0.0.1:14318';
 const TIMEOUT_MS = 1200;
 
 const SUBTYPE_BY_EVENT = {
@@ -23,6 +24,9 @@ const SUBTYPE_BY_EVENT = {
   PostToolUse: 'post_tool',
   Stop: 'stop',
   SessionEnd: 'session_end',
+  SubagentStart: 'subagent_start',
+  SubagentStop: 'subagent_stop',
+  Interrupt: 'stop',
 };
 
 function readInput() {
@@ -35,7 +39,11 @@ function readInput() {
 
 function git(cwd, args) {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch {
     return '';
   }
@@ -58,7 +66,8 @@ function ticketFromBranch(branch) {
 
 function clientName(provider) {
   const configured = process.env.AAD_CLIENT;
-  if (configured === 'cli' || configured === 'desktop' || configured === 'vscode') return configured;
+  if (configured === 'cli' || configured === 'desktop' || configured === 'vscode')
+    return configured;
   const terminal = (process.env.TERM_PROGRAM ?? '').toLowerCase();
   if (terminal.includes('vscode')) return 'vscode';
   return provider === 'codex' ? 'unknown' : 'cli';
@@ -80,7 +89,10 @@ function safeToolSummary(toolName) {
     return 'File edit';
   }
   if (toolName.startsWith('mcp__')) {
-    const integration = toolName.split('__')[1]?.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+    const integration = toolName
+      .split('__')[1]
+      ?.replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(0, 32);
     return integration ? `Integration: ${integration}` : 'Integration';
   }
   return toolName.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 64) || 'Tool';
@@ -97,10 +109,39 @@ async function main() {
   const repo = topLevel ? topLevel.split('/').pop() : undefined;
   const attrs = parseResourceAttrs();
   const provider = process.env.AAD_PROVIDER === 'codex' ? 'codex' : 'claude';
+  const childId =
+    typeof input.agent_id === 'string' && /^[a-zA-Z0-9_.-]{1,160}$/.test(input.agent_id)
+      ? input.agent_id
+      : undefined;
+  const isChildLifecycle =
+    input.hook_event_name === 'SubagentStart' || input.hook_event_name === 'SubagentStop';
+  if (isChildLifecycle && !childId) return;
+  const isChild = Boolean(childId && (provider === 'claude' || isChildLifecycle));
+  const sessionId = isChild
+    ? provider === 'codex'
+      ? childId
+      : `${input.session_id}/agent:${childId}`
+    : input.session_id;
+  const agentType =
+    typeof input.agent_type === 'string'
+      ? input.agent_type.replace(/[^a-zA-Z0-9 _.:/-]/g, '').slice(0, 80)
+      : undefined;
 
   const payload = {
+    event_id: randomUUID(),
     event: subtype,
-    session_id: input.session_id,
+    session_id: sessionId,
+    parent_session_id: isChild ? input.session_id : undefined,
+    session_role: isChild
+      ? 'subagent'
+      : input.hook_event_name === 'SessionStart'
+        ? 'main'
+        : undefined,
+    agent_type: isChild ? agentType : undefined,
+    prompt_id:
+      typeof (input.prompt_id ?? input.turn_id) === 'string'
+        ? (input.prompt_id ?? input.turn_id).slice(0, 200)
+        : undefined,
     // A custom alias is opt-in. Otherwise the server derives a pseudonym from
     // the session id; never transmit OS usernames or Git email by default.
     user: process.env.AAD_USER || undefined,
@@ -110,7 +151,12 @@ async function main() {
     department: attrs['department'],
     repo,
     branch,
-    ticket: ticketFromBranch(branch),
+    ticket: process.env.AAD_TICKET || ticketFromBranch(branch),
+    project_id: process.env.AAD_PROJECT_ID || undefined,
+    work_item_id:
+      process.env.AAD_WORK_ITEM_ID || process.env.AAD_TICKET || ticketFromBranch(branch),
+    run_id: process.env.AAD_RUN_ID || undefined,
+    parent_run_id: process.env.AAD_PARENT_RUN_ID || undefined,
     cwd,
     // Only a sanitized tool summary is sent; tool_input is never read.
     tool_name: safeToolSummary(input.tool_name),

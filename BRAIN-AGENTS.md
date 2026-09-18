@@ -5,9 +5,8 @@ immutable captures, project scope, analyses, and human decisions. Cognee supplie
 the derived search index and extracted graph. Developer agents call Brain over HTTP;
 they do not need Notion, Cognee, or model-provider credentials.
 
-This guide describes the current runtime. The original [README](README.md) remains
-a registered specification; its references to a fixed-rule demo, local exports and
-no AI calls describe the retired workflow. Use this guide for operational setup.
+Use this guide for Brain setup and operation. The [README](README.md) introduces
+the dashboard, telemetry and storage options.
 
 ## Start locally
 
@@ -138,7 +137,8 @@ by server code, with at most three OpenAI Responses calls and no autonomous loop
    its structured output, IDs and exact citations before continuing.
 3. Recheck source approval and scope before each call and before completion. Stop
    on the first failure without retrying through another provider.
-4. Store the evidence, model usage, progress and results in SQLite. An administrator
+4. Store the evidence, model usage, progress and results in PostgreSQL when
+   `DATABASE_URL` is configured, or SQLite otherwise. An administrator
    records human decisions; each revision is retained and queued as scoped context,
    never as a replacement specification. Generated fields use English; quotes retain
    their source language. No agent executes code or changes a source.

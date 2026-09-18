@@ -1,16 +1,18 @@
 # Agent Activity Dashboard
 
-## Harmony Brain — local demo
+## Harmony Brain and the live board
 
-The **Harmony Brain** tab adds a local source memory, three explicit comparison rules,
-and persistent human-review forms. This demo uses deterministic extraction and checks;
-it makes no AI calls. See [the presentation walkthrough](DEMO-BRAIN.md) for setup,
-the five-minute demo, and its limits.
-
-The **Analyses par projet** view adds actual model calls once configured, with
-project-specific specifications, Git revisions and human review. See
+The **Harmony Brain** tab connects approved project references, Notion sources,
+Cognee memory search, and persistent human reviews. The **Project analyses** view
+runs actual model calls once configured, with project-specific specifications,
+Git revisions and submitted changes. See
 [agent setup and the first real test](BRAIN-AGENTS.md). Without API access, it
 explicitly remains unavailable; it does not fabricate AI results.
+
+The Board highlights active main tasks. Open a task to inspect its linked subagents
+and timeline; inactive and unlinked sessions remain collapsed. Brain analyses have
+their own progress and usage list. Coding telemetry and Brain indexing are separate:
+indexing may call models, and its costs are not included in the Board's analysis costs.
 
 Real-time, local Mission Control showing **what Claude Code and Codex agents are
 doing** during the build phase — which provider and client are active, on which
@@ -19,9 +21,15 @@ ticket, which safe tool summary is running, and how much usage it represents.
 > Observability of **agents** (quality, security, cost) — not surveillance of people.
 > Prompt content is never logged. Default view is aggregated by stream.
 
+The board focuses on agent activity, usage and analysis results. Human workflow
+and delivery comparisons are handled by external services.
+
 Originally built for a POC on developer Macs. The Node application runs on
 Windows, macOS and Linux; Docker uses Linux containers. Live state uses an in-memory ring buffer;
-privacy-safe history is retained in SQLite for 60 rolling days by default.
+privacy-safe history is retained for 60 rolling days by default. `DATABASE_URL`
+selects PostgreSQL; SQLite remains available when it is unset or explicitly empty.
+See [PostgreSQL setup and migration](POSTGRES.md) and
+[Codex desktop / Claude Code CLI telemetry](TELEMETRY.md).
 
 ---
 
@@ -33,6 +41,12 @@ privacy-safe history is retained in SQLite for 60 rolling days by default.
    are posted to `/activity`. Hooks send only structural metadata and sanitized
    tool summaries.
 
+Both sources pass through a local relay that forwards only explicitly selected
+Git repositories. Install it once per developer, choose projects with
+`npm run agents:projects -- --allow /path/to/project`, and keep
+`npm run agents:relay` running. New installations send nothing by default.
+See [developer setup and project selection](fleet/SETUP.md).
+
 ## Architecture
 
 ```
@@ -43,7 +57,7 @@ hooks (SessionStart, …) ──────►┤   ├─ POST /v1/logs      (
                                │   ├─ POST /v1/metrics
                                │   ├─ POST /activity     (hooks)
                                │   ├─ ring buffer (500 live events)
-                               │   ├─ SQLite history (60 days)
+                               │   ├─ PostgreSQL / SQLite history (60 days)
                                │   └─ WebSocket /live
                                └──────────────────► ui/  (React + Vite)
 ```
@@ -55,13 +69,17 @@ commands on Windows, macOS and Linux:
 
 ```text
 npm ci
+npm run db:start
 npm run build
 npm run brain
 ```
 
 Open [Harmony Brain](http://127.0.0.1:5173/#brain). Logs stay in the terminal;
 Ctrl+C stops both the API and UI. No OS-specific launcher is needed.
-See [Brain setup](DEMO-BRAIN.md) for local exports and the Docker source mounts.
+`db:start` requires Docker Desktop and starts local PostgreSQL. For SQLite, omit
+that command and set `DATABASE_URL` to an explicitly empty value if local PostgreSQL
+settings already exist. See [Brain setup](BRAIN-AGENTS.md) for service configuration
+and the Docker source mounts, and [migration instructions](POSTGRES.md) for existing data.
 
 For development with automatic reload, use two terminals:
 
@@ -88,7 +106,7 @@ guide includes user-level Codex OTel and hook setup.
 
 ## Local Docker
 
-The complete POC runs behind one same-origin proxy on the local-only default
+The basic dashboard uses SQLite in Docker and runs behind one same-origin proxy on the local-only default
 port `18418`:
 
 ```bash
@@ -106,25 +124,14 @@ deleting that data; adding `--volumes` deletes it.
 `npm run demo:seed` adds one Claude and one Codex session to the live board for
 local evaluation. It sends only synthetic metadata.
 
-For local agent ingestion, use `http://127.0.0.1:18418` as `AAD_URL` and the
-OTLP base URL.
+For agents using this Docker dashboard, run
+`npm run agents:setup -- --url http://127.0.0.1:18418 --apply`, select repositories
+and start the relay. Client OTLP exports and hooks still target the local relay
+on port 14318; its upstream destination is the Docker dashboard.
 
-### Connect GitHub and Jira delivery data
-
-Open the dashboard and select **Connect delivery data** in the delivery
-baseline panel. From there you can:
-
-- enter read-only GitHub.com and Atlassian Cloud credentials;
-- test both connections before saving;
-- choose repositories, Jira projects, anonymization, and a history start date;
-- run the import and follow its progress; and
-- review dated successful and failed imports.
-
-Credentials are encrypted before they are written to the `aad-data` Docker
-volume. Set a unique `CREDENTIAL_ENCRYPTION_KEY` in the local `.env` file; if
-that key is lost or changed, previously saved credentials cannot be decrypted.
-Tokens and the anonymization salt are never returned by the API or written to
-run history.
+The separate `compose.postgres.yaml` starts a database for the host application;
+it does not reconfigure `compose.yaml`. For the full Brain container setup, follow
+[BRAIN-AGENTS.md](BRAIN-AGENTS.md) and its Cognee overlay.
 
 ## Verifying the pipeline
 
@@ -143,10 +150,12 @@ You should see `claude_code.session.count` at session start and
 
 ## Privacy & compliance (non-negotiable)
 
-- **Prompt content is never logged.** `OTEL_LOG_USER_PROMPTS`,
-  `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES` are **never** set. The
-  server neither receives nor stores prompt text. Codex must keep
-  `otel.log_user_prompt = false`.
+- **Coding prompt content is not retained by telemetry.** Keep
+  `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT` and `OTEL_LOG_RAW_API_BODIES`
+  disabled (`0`). Codex must keep `otel.log_user_prompt = false`.
+  The ingestion parser selects structural fields and discards raw prompt/tool
+  content. Brain analyses separately receive the submitted code and approved
+  references needed for their explicitly requested review.
 - **Raw commands and tool data are never logged.** Hooks send summaries such as
   `Terminal command` or `File edit`; they do not send arguments or output.
 - **Default view is aggregated by stream** (`team.id`), not nominative.
@@ -160,7 +169,7 @@ You should see `claude_code.session.count` at session start and
 
 | Path | What |
 |---|---|
-| `server/` | Fastify OTLP ingest + live store + SQLite history + WebSocket |
+| `server/` | Fastify OTLP ingest + live store + PostgreSQL/SQLite history + WebSocket |
 | `ui/` | React + Vite live dashboard |
 | `hooks/` | Claude Code/Codex hook bridge and setup snippets |
 | `Dockerfile`, `compose.yaml` | local two-container deployment on port 18418 |

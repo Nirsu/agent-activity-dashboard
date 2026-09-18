@@ -224,7 +224,7 @@ test('automatic approval includes nested and future pages, persists across resta
     response(rootId, `${reference(childId)}\n${reference(siblingId)}\n${reference(newId)}`),
   );
   f.pages.set(newId, response(newId, 'New approved requirement.', rootId));
-  f.service.queueAll();
+  await f.service.queueAll();
   await f.service.wait();
   assert.equal(f.calls.length, 4);
   assert.equal(f.source(newId).approval, 'approved');
@@ -248,13 +248,13 @@ test('removed branches preserve evidence and explicit withdrawals survive automa
     autoApproveSubpages: true,
   });
   f.pages.set(rootId, response(rootId, reference(siblingId)));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.equal(f.source(childId).approvalBeforeRemoval, 'approved');
   assert.equal(f.source(nestedId).approval, 'withdrawn');
   assert.ok(f.service.store.capture(captureId));
   f.pages.set(rootId, response(rootId, `${reference(childId)}\n${reference(siblingId)}`));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.equal(f.source(nestedId).approval, 'approved');
   assert.equal(f.source(siblingId).approval, 'withdrawn');
@@ -282,7 +282,7 @@ test('incomplete discovery does not remove existing pages and foreign parent met
   await f.register(true);
   await f.service.wait();
   f.pages.set(rootId, response(rootId, reference(childId), undefined, true));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.match(f.source(rootId).error!, /incomplete/);
   assert.equal(f.source(siblingId).approval, 'approved');
@@ -292,7 +292,7 @@ test('incomplete discovery does not remove existing pages and foreign parent met
     response(rootId, `${reference(childId)}\n${reference(siblingId)}\n${reference(newId)}`),
   );
   f.pages.set(newId, response(newId, 'Foreign project requirement.', nestedId));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.equal(f.source(newId).status, 'failed');
   assert.match(f.source(newId).error!, /verified child/);
@@ -345,7 +345,7 @@ test('discovery fails visibly on source limits, cycles and conflicting project s
     brainConfig.synchronization.maxSources = previousLimit;
   }
   f.pages.set(rootId, response(rootId, reference(rootId)));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.match(f.source(rootId).error!, /cycle/);
   await f.service.register({
@@ -356,7 +356,7 @@ test('discovery fails visibly on source limits, cycles and conflicting project s
   });
   await f.service.wait();
   f.pages.set(rootId, response(rootId, reference(siblingId)));
-  f.service.queue(`notion:${rootId}`);
+  await f.service.queue(`notion:${rootId}`);
   await f.service.wait();
   assert.match(f.source(rootId).error!, /another project scope/);
   assert.deepEqual(f.source(siblingId).projectIds, ['other']);
@@ -376,7 +376,7 @@ test('moving a subpage within a project works in either sync order and preserves
     f.pages.set(siblingId, response(siblingId, reference(nestedId), rootId));
     f.pages.set(nestedId, response(nestedId, 'Use UTC timestamps.', siblingId));
     for (const id of order) {
-      f.service.queue(`notion:${id}`);
+      await f.service.queue(`notion:${id}`);
       await f.service.wait();
     }
     assert.equal(f.source(nestedId).parentSourceId, `notion:${siblingId}`);
@@ -392,7 +392,7 @@ test('moving a subpage within a project works in either sync order and preserves
     f.pages.set(childId, response(childId, reference(nestedId), rootId));
     f.pages.set(siblingId, response(siblingId, 'Preserve the export author.', rootId));
     f.pages.set(nestedId, response(nestedId, 'Use UTC timestamps.', childId));
-    f.service.queue(`notion:${rootId}`);
+    await f.service.queue(`notion:${rootId}`);
     await f.service.wait();
     assert.equal(f.source(nestedId).parentSourceId, `notion:${childId}`);
     assert.equal(f.source(nestedId).approval, 'withdrawn');
@@ -404,7 +404,7 @@ test('a move requires a verified parent and cannot overwrite a concurrent withdr
   await f.register(true);
   await f.service.wait();
   f.pages.set(siblingId, response(siblingId, reference(nestedId), rootId));
-  f.service.queue(`notion:${siblingId}`);
+  await f.service.queue(`notion:${siblingId}`);
   await f.service.wait();
   assert.match(f.source(siblingId).error!, /not a verified child/);
   assert.equal(f.source(nestedId).parentSourceId, `notion:${childId}`);
@@ -421,7 +421,7 @@ test('a move requires a verified parent and cannot overwrite a concurrent withdr
     }
     return fetchPage(id);
   });
-  f.service.queue(`notion:${siblingId}`);
+  await f.service.queue(`notion:${siblingId}`);
   await f.service.wait();
   assert.match(f.source(siblingId).error!, /settings changed/);
   assert.equal(f.source(nestedId).parentSourceId, `notion:${childId}`);

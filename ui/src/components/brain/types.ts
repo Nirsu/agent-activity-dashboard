@@ -48,6 +48,12 @@ export type Project = {
   specifications: number;
 };
 export type AnalysisRun = {
+  correlation?: {
+    ticket?: string;
+    workItemId?: string;
+    originSessionId?: string;
+    parentRunId?: string;
+  };
   id: string;
   detailVersion?: string;
   projectId: string;

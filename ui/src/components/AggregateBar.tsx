@@ -1,4 +1,4 @@
-import type { Aggregate } from '../types';
+import type { AgentProvider, Aggregate } from '../types';
 import { ago, usd } from '../format';
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -10,19 +10,39 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-export function AggregateBar({ agg }: { agg: Aggregate | null }) {
+export function AggregateBar({
+  agg,
+  provider,
+}: {
+  agg: Aggregate | null;
+  provider?: AgentProvider;
+}) {
   if (!agg) return <div className="aggbar aggbar-empty">Waiting for telemetry…</div>;
 
   const total = agg.editWriteAccepts + agg.editWriteRejects;
   const acceptRate = total ? Math.round((agg.editWriteAccepts / total) * 100) : null;
+  const providerLabel =
+    provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : 'All AI';
 
   return (
-    <div className="aggbar">
-      <Stat label="Active sessions" value={String(agg.activeSessions)} tone="accent" />
-      <Stat label="Prompts / last hour" value={String(agg.promptsLastHour)} />
-      <Stat label="Cost today" value={usd(agg.costTodayUsd)} tone="accent" />
+    <div className="aggbar" role="region" aria-label={`${providerLabel} activity summary`}>
       <Stat
-        label="Edit/Write accept"
+        label={`Active main tasks · ${provider ? providerLabel : 'all streams'}`}
+        value={String(agg.activeSessions)}
+        tone="accent"
+      />
+      <Stat label="Prompts / last hour" value={String(agg.promptsLastHour)} />
+      <Stat
+        label={
+          agg.costKnown
+            ? `Known cost today${agg.unknownUsageCount ? ' · partial' : provider ? ` · ${providerLabel}` : ' · all sources'}`
+            : 'Cost unavailable · today'
+        }
+        value={agg.costKnown ? usd(agg.costTodayUsd) : '—'}
+        tone={agg.unknownUsageCount ? 'warn' : 'accent'}
+      />
+      <Stat
+        label="Edit/Write tool permissions"
         value={acceptRate === null ? '—' : `${acceptRate}%`}
         tone={acceptRate !== null && acceptRate < 60 ? 'warn' : ''}
       />

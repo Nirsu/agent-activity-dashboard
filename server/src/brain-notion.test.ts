@@ -10,7 +10,6 @@ import { normalizePageId, parseNotionPage } from './brain/notion/page.js';
 import { registerNotionRoutes } from './brain/notion/routes.js';
 import { config } from './config.js';
 import { brainConfig } from './brain/config.js';
-import type { DeliveryService } from './delivery.js';
 
 const pageId = '3dddeff1b90780b7baedffb10c08a0d3';
 const encryptionKey = 'a-test-only-encryption-key-long-enough';
@@ -447,9 +446,7 @@ test('shared HTTP routes enforce real administrator guards without hanging and k
     ]),
   );
   const { buildApp } = await import('./index.js');
-  const app = await buildApp({
-    deliveryService: { init: async () => {} } as unknown as DeliveryService,
-  });
+  const app = await buildApp();
   t.after(async () => {
     await app.close();
     Object.assign(config, previousConfiguration);

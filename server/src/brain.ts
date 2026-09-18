@@ -12,10 +12,14 @@ import { registerMemoryRoutes } from './brain/memory/routes.js';
 import { registerMemoryWebhooks } from './brain/memory/webhooks.js';
 import { registerMemoryGraph } from './brain/graph.js';
 import { registerBrainMcp } from './brain/mcp.js';
+import type { BrainAgentsOptions } from './brain/analysis/types.js';
 
 export { makeSource, type Source } from './brain/sources.js';
 
-export async function registerBrain(app: FastifyInstance) {
+export async function registerBrain(
+  app: FastifyInstance,
+  options: Pick<BrainAgentsOptions, 'onActivity'> = {},
+) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const dbPath = process.env.BRAIN_DB_PATH ?? resolve(config.dataDir, 'brain.db');
   const projectsPath = process.env.BRAIN_PROJECTS_PATH ?? resolve(root, 'brain.projects.json');
@@ -26,22 +30,30 @@ export async function registerBrain(app: FastifyInstance) {
     projectsPath,
     notion,
     cognee,
+    schedule: process.env.BRAIN_SYNC_ENABLED !== '0',
     syncMode: process.env.BRAIN_SYNC_MODE === 'webhook' ? 'webhook' : 'poll',
+  });
+  const agents = new BrainAgents({ dbPath, projectsPath, memory, onActivity: options.onActivity });
+  // Register cleanup before initialization can fail. Abort upstream work before awaiting workers.
+  app.addHook('onClose', async () => {
+    try {
+      cognee.close();
+      await notion.close();
+    } finally {
+      try {
+        await agents.close();
+      } finally {
+        await memory.close();
+      }
+    }
   });
   await notion.init();
   await memory.init();
-  app.addHook('onClose', () => memory.close());
   app.addHook('onRequest', requireBrainAccess);
   await registerNotionRoutes(app, notion, requireBrainAdmin);
   registerMemoryRoutes(app, memory, requireBrainAdmin);
   await registerMemoryWebhooks(app, memory);
-  const agents = new BrainAgents({ dbPath, projectsPath, memory });
-  await registerBrainAgents(app, agents);
+  await registerBrainAgents(app, agents, { registerCloseHook: false });
   registerBrainMcp(app, agents);
   registerMemoryGraph(app, memory, agents);
-  // Fastify closes hooks in reverse order. Abort upstream work before waiting for analyses.
-  app.addHook('onClose', async () => {
-    cognee.close();
-    await notion.close();
-  });
 }

@@ -18,10 +18,10 @@ export function subpagesOf(sources: SourceRegistration[], parentId: string) {
   return descendants;
 }
 
-export function removeSubpages(store: MemoryStore, parentId: string) {
+export async function removeSubpages(store: MemoryStore, parentId: string) {
   for (const source of subpagesOf(store.sources(), parentId)) {
     if (source.approval !== 'withdrawn') {
-      store.saveSource({
+      await store.saveSource({
         ...source,
         approvalBeforeRemoval: source.approval,
         approval: 'withdrawn',
@@ -31,15 +31,15 @@ export function removeSubpages(store: MemoryStore, parentId: string) {
   }
 }
 
-export function inheritSubpagePolicy(store: MemoryStore, parent: SourceRegistration) {
+export async function inheritSubpagePolicy(store: MemoryStore, parent: SourceRegistration) {
   if (!parent.includeSubpages || parent.approval === 'withdrawn') {
-    removeSubpages(store, parent.id);
+    await removeSubpages(store, parent.id);
     return;
   }
   for (const source of subpagesOf(store.sources(), parent.id)) {
     const approval =
       parent.autoApproveSubpages && source.approval === 'draft' ? 'approved' : source.approval;
-    store.saveSource({
+    await store.saveSource({
       ...source,
       projectIds: [...parent.projectIds],
       shared: parent.shared,
@@ -98,65 +98,71 @@ export async function reconcileSubpages(
     }
   }
   // A policy edit during the remote verification must win over this discovery.
-  const inspectedIds = [parent.id, ...references.map((reference) => `notion:${reference.pageId}`)];
-  if (
-    inspectedIds.some(
-      (id) =>
-        JSON.stringify(sources.find((source) => source.id === id)) !==
-        JSON.stringify(store.source(id)),
-    )
-  ) {
-    fail('Source settings changed during subpage discovery. Synchronize the updated branch.');
-  }
-  const currentSources = store.sources();
-  const newPages = references.filter((reference) => !store.source(`notion:${reference.pageId}`));
-  if (currentSources.length + newPages.length > brainConfig.synchronization.maxSources) {
-    fail('Subpage discovery exceeds the configured source limit. Narrow the selected branch.');
-  }
-  const currentIds = new Set(references.map((reference) => `notion:${reference.pageId}`));
-  for (const source of currentSources.filter((entry) => entry.parentSourceId === parent.id)) {
-    if (!currentIds.has(source.id)) {
-      if (source.approval !== 'withdrawn') {
-        store.saveSource({
-          ...source,
-          approvalBeforeRemoval: source.approval,
-          approval: 'withdrawn',
-          status: 'withdrawn',
-        });
+  // The check and all local writes share one transaction; network work stays outside.
+  return store.transaction(async () => {
+    const inspectedIds = [
+      parent.id,
+      ...references.map((reference) => `notion:${reference.pageId}`),
+    ];
+    if (
+      inspectedIds.some(
+        (id) =>
+          JSON.stringify(sources.find((source) => source.id === id)) !==
+          JSON.stringify(store.source(id)),
+      )
+    ) {
+      fail('Source settings changed during subpage discovery. Synchronize the updated branch.');
+    }
+    const currentSources = store.sources();
+    const newPages = references.filter((reference) => !store.source(`notion:${reference.pageId}`));
+    if (currentSources.length + newPages.length > brainConfig.synchronization.maxSources) {
+      fail('Subpage discovery exceeds the configured source limit. Narrow the selected branch.');
+    }
+    const currentIds = new Set(references.map((reference) => `notion:${reference.pageId}`));
+    for (const source of currentSources.filter((entry) => entry.parentSourceId === parent.id)) {
+      if (!currentIds.has(source.id)) {
+        if (source.approval !== 'withdrawn') {
+          await store.saveSource({
+            ...source,
+            approvalBeforeRemoval: source.approval,
+            approval: 'withdrawn',
+            status: 'withdrawn',
+          });
+        }
+        await removeSubpages(store, source.id);
       }
-      removeSubpages(store, source.id);
     }
-  }
-  const queued: string[] = [];
-  for (const reference of references) {
-    const id = `notion:${reference.pageId}`;
-    const existing = store.source(id);
-    const previousApproval = existing?.approvalBeforeRemoval ?? existing?.approval ?? 'draft';
-    const approval =
-      previousApproval !== 'withdrawn' && parent.autoApproveSubpages
-        ? 'approved'
-        : previousApproval;
-    const child: SourceRegistration = {
-      ...existing,
-      id,
-      kind: 'notion',
-      pageId: reference.pageId,
-      title: existing?.title ?? reference.title.slice(0, brainConfig.analysis.maxTitleCharacters),
-      url: `https://www.notion.so/${reference.pageId}`,
-      parentSourceId: parent.id,
-      approvalBeforeRemoval: undefined,
-      projectIds: [...parent.projectIds],
-      shared: parent.shared,
-      mandatory: existing?.mandatory ?? false,
-      includeSubpages: true,
-      autoApproveSubpages: Boolean(parent.autoApproveSubpages),
-      approval,
-      status: approval === 'withdrawn' ? 'withdrawn' : 'pending',
-    };
-    store.saveSource(child);
-    if (approval !== 'withdrawn') {
-      queued.push(id);
+    const queued: string[] = [];
+    for (const reference of references) {
+      const id = `notion:${reference.pageId}`;
+      const existing = store.source(id);
+      const previousApproval = existing?.approvalBeforeRemoval ?? existing?.approval ?? 'draft';
+      const approval =
+        previousApproval !== 'withdrawn' && parent.autoApproveSubpages
+          ? 'approved'
+          : previousApproval;
+      const child: SourceRegistration = {
+        ...existing,
+        id,
+        kind: 'notion',
+        pageId: reference.pageId,
+        title: existing?.title ?? reference.title.slice(0, brainConfig.analysis.maxTitleCharacters),
+        url: `https://www.notion.so/${reference.pageId}`,
+        parentSourceId: parent.id,
+        approvalBeforeRemoval: undefined,
+        projectIds: [...parent.projectIds],
+        shared: parent.shared,
+        mandatory: existing?.mandatory ?? false,
+        includeSubpages: true,
+        autoApproveSubpages: Boolean(parent.autoApproveSubpages),
+        approval,
+        status: approval === 'withdrawn' ? 'withdrawn' : 'pending',
+      };
+      await store.saveSource(child);
+      if (approval !== 'withdrawn') {
+        queued.push(id);
+      }
     }
-  }
-  return queued;
+    return queued;
+  });
 }

@@ -1,5 +1,5 @@
 // Shared domain types for the ingestion server.
-// The WS contract (ServerMessage) is mirrored in ui/src/types.ts.
+// The UI re-exports the WS contract (ServerMessage) from this module.
 
 export type EventKind =
   | 'user_prompt' // OTel  claude_code.user_prompt
@@ -13,6 +13,69 @@ export type EventKind =
 
 export type AgentProvider = 'claude' | 'codex';
 export type AgentClient = 'cli' | 'desktop' | 'vscode' | 'unknown';
+export type SessionRole = 'main' | 'subagent' | 'internal' | 'unknown';
+export type MetricTemporality = 'delta' | 'cumulative' | 'unspecified';
+
+/** A persisted counter baseline. The key includes every OTLP series dimension. */
+export interface CumulativeSnapshot {
+  seriesKey: string;
+  provider: AgentProvider;
+  sessionId: string;
+  metricName: string;
+  tokenType?: string;
+  model?: string;
+  startTimeUnixNano?: string;
+  endTimeUnixNano?: string;
+  value: number;
+  ts: number;
+}
+
+/** Nullable measurements distinguish missing telemetry from measured zero usage. */
+export interface UsageDelta {
+  usageId: string;
+  dedupeKeys?: string[];
+  source: 'claude_metrics' | 'codex_logs' | 'brain';
+  ts: number;
+  provider: string;
+  client?: AgentClient;
+  sessionId?: string;
+  agent?: string;
+  teamId?: string;
+  ticket?: string;
+  repo?: string;
+  projectId?: string;
+  workItemId?: string;
+  runId?: string;
+  parentRunId?: string;
+  model?: string;
+  metricName?: string;
+  dUsd: number | null;
+  dTokensIn: number | null;
+  dTokensOut: number | null;
+  cachedInputTokens?: number;
+  costOrigin?: 'reported' | 'model';
+  costStatus: 'measured' | 'estimated' | 'unknown';
+  cumulative?: CumulativeSnapshot;
+}
+
+export interface SessionUsageTotals {
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  costKnown: boolean;
+  tokensKnown: boolean;
+  knownCostCount?: number;
+}
+
+export interface UsageAliasUpdate {
+  usageId: string;
+  dedupeKeys: string[];
+  // Complete the canonical observation, including corrections to a derived cost.
+  measurements?: Pick<
+    UsageDelta,
+    'dUsd' | 'dTokensIn' | 'dTokensOut' | 'cachedInputTokens' | 'model' | 'costOrigin'
+  >;
+}
 
 // Lifecycle subtype for hook-sourced ('activity') events.
 export type ActivitySubtype =
@@ -22,6 +85,8 @@ export type ActivitySubtype =
   | 'post_tool'
   | 'stop'
   | 'session_end'
+  | 'subagent_start'
+  | 'subagent_stop'
   | 'context_update';
 
 /** A normalized, privacy-safe event. Never contains prompt or tool content. */
@@ -36,6 +101,18 @@ export interface AgentEvent {
   // correlation
   promptId?: string;
   sessionId?: string;
+  rawSessionId?: string;
+  parentSessionId?: string;
+  rawParentSessionId?: string;
+  sessionRole?: SessionRole;
+  sessionSource?: string;
+  agentType?: string;
+  requestId?: string;
+  responseId?: string;
+  projectId?: string;
+  workItemId?: string;
+  runId?: string;
+  parentRunId?: string;
 
   // identity / grouping
   userEmail?: string; // cleared when anonymize is on
@@ -54,8 +131,10 @@ export interface AgentEvent {
   // api events
   model?: string;
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  usageOrigin?: 'request' | 'response';
   statusCode?: number;
   attempt?: number;
 
@@ -63,6 +142,10 @@ export interface AgentEvent {
   metricName?: string;
   metricValue?: number;
   tokenType?: string; // token.usage: input | output | cacheRead | cacheCreation
+  metricTemporality?: MetricTemporality;
+  metricSeriesId?: string;
+  metricStartTimeUnixNano?: string;
+  metricEndTimeUnixNano?: string;
 
   // mcp connection
   mcpServer?: string;
@@ -80,7 +163,14 @@ export type SessionStatus = 'idle' | 'thinking' | 'tool';
 
 export interface SessionState {
   sessionId: string;
+  rawSessionId?: string;
+  parentSessionId?: string;
+  sessionRole?: SessionRole;
+  sessionSource?: string;
+  agentType?: string;
+  endedAt?: number;
   provider: AgentProvider;
+  model?: string;
   client?: AgentClient;
   teamId?: string;
   department?: string;
@@ -91,6 +181,10 @@ export interface SessionState {
   ticket?: string;
   ticketTitle?: string;
   cwd?: string;
+  projectId?: string;
+  workItemId?: string;
+  runId?: string;
+  parentRunId?: string;
 
   status: SessionStatus;
   currentTool?: string;
@@ -102,6 +196,8 @@ export interface SessionState {
 
   sessionTokens: number; // cumulative tokens this session (from token.usage metrics)
   sessionCostUsd: number; // cumulative cost this session (from cost.usage metrics)
+  costKnown: boolean;
+  tokensKnown: boolean;
 
   promptCount: number; // prompts this session
   lastEventAt: number;
@@ -114,6 +210,9 @@ export interface Aggregate {
   costTodayUsd: number;
   tokensTodayInput: number;
   tokensTodayOutput: number;
+  costKnown: boolean;
+  tokensKnown: boolean;
+  unknownUsageCount: number;
   editWriteAccepts: number;
   editWriteRejects: number;
   recentErrors: Array<{
@@ -124,12 +223,15 @@ export interface Aggregate {
   }>;
 }
 
+export type ProviderAggregates = Record<AgentProvider, Aggregate>;
+
 // ---- WebSocket contract (server -> client) ----
 
 export interface SnapshotMessage {
   type: 'snapshot';
   sessions: SessionState[];
   aggregate: Aggregate;
+  providerAggregates?: ProviderAggregates;
   recentEvents: AgentEvent[];
 }
 export interface EventMessage {
@@ -140,6 +242,7 @@ export interface SessionsMessage {
   type: 'sessions';
   sessions: SessionState[];
   aggregate: Aggregate;
+  providerAggregates?: ProviderAggregates;
 }
 
 export type ServerMessage = SnapshotMessage | EventMessage | SessionsMessage;

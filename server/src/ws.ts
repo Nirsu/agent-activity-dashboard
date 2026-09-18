@@ -27,7 +27,12 @@ export function registerWebSocket(app: FastifyInstance, store: Store): void {
 
   store.on('event', (event) => broadcast({ type: 'event', event }));
   store.on('sessions', (sessions, aggregate) =>
-    broadcast({ type: 'sessions', sessions, aggregate }),
+    broadcast({
+      type: 'sessions',
+      sessions,
+      aggregate,
+      providerAggregates: store.getProviderAggregates(),
+    }),
   );
 
   app.get('/live', { websocket: true }, (socket) => {
@@ -36,6 +41,7 @@ export function registerWebSocket(app: FastifyInstance, store: Store): void {
       type: 'snapshot',
       sessions: store.getSessions(),
       aggregate: store.getAggregate(),
+      providerAggregates: store.getProviderAggregates(),
       recentEvents: store.getRecentEvents(100),
     });
     socket.on('close', () => clients.delete(socket));

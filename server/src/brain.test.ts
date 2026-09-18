@@ -131,10 +131,10 @@ test('Draft approval creates a published immutable capture; unchanged sync and r
     assert.equal(approved.content, f.pages.get(pageId));
     assert.equal(f.service.store.capture(draft.id)!.status, 'draft');
     assert.equal(f.indexCalls.length, 1);
-    f.service.queue(source.id);
+    await f.service.queue(source.id);
     await f.service.wait();
     await f.restart();
-    f.service.queue(source.id);
+    await f.service.queue(source.id);
     await f.service.wait();
     assert.equal(f.indexCalls.length, 1);
     const result = await f.service.retrieve(f.projects[0], 'source');
@@ -198,7 +198,7 @@ test('Changed and inaccessible sources cannot silently reuse stale evidence', as
     const original = f.service.store.source(registration.id)!;
     f.pages.set(pageId, 'Changed requirement');
     f.setFail(true);
-    f.service.queue(registration.id);
+    await f.service.queue(registration.id);
     await f.service.wait();
     assert.equal(f.service.store.source(registration.id)!.status, 'failed');
     assert.equal(
@@ -210,7 +210,7 @@ test('Changed and inaccessible sources cannot silently reuse stale evidence', as
       /not fully synchronized/,
     );
     f.setFail(false);
-    f.service.queue(registration.id);
+    await f.service.queue(registration.id);
     await f.service.wait();
     assert.notEqual(
       f.service.store.source(registration.id)!.currentSourceId,
@@ -221,7 +221,7 @@ test('Changed and inaccessible sources cannot silently reuse stale evidence', as
       'Original requirement',
     );
     f.pages.delete(pageId);
-    f.service.queue(registration.id);
+    await f.service.queue(registration.id);
     await f.service.wait();
     await assert.rejects(
       f.service.retrieve(f.projects[0], 'requirement'),
@@ -267,8 +267,8 @@ test('Git retrieval uses the supplied analysis commit and never substitutes anot
       {},
       '2'.repeat(40),
     );
-    f.service.store.saveCapture(current);
-    f.service.store.saveSource({
+    await f.service.store.saveCapture(current);
+    await f.service.store.saveSource({
       ...registration,
       status: 'ready',
       currentSourceId: current.id,
@@ -292,13 +292,13 @@ test('Webhook event persistence deduplicates enqueue and interrupted jobs resume
     await f.service.wait();
     let count = 0;
     assert.equal(
-      f.service.store.recordEvent('delivery-1', () => {
+      await f.service.store.recordEvent('delivery-1', () => {
         count++;
       }),
       true,
     );
     assert.equal(
-      f.service.store.recordEvent('delivery-1', () => {
+      await f.service.store.recordEvent('delivery-1', () => {
         count++;
       }),
       false,
@@ -311,16 +311,16 @@ test('Webhook event persistence deduplicates enqueue and interrupted jobs resume
       requestedAt: new Date().toISOString(),
       attempts: 1,
     };
-    f.service.store.saveJob(job);
+    await f.service.store.saveJob(job);
     await f.restart();
     assert.equal(f.service.store.jobs().find((value) => value.id === job.id)!.status, 'queued');
     assert.equal(
-      f.service.store.recordEvent('delivery-1', () => {
+      await f.service.store.recordEvent('delivery-1', () => {
         count++;
       }),
       false,
     );
-    f.service.queue(registration.id);
+    await f.service.queue(registration.id);
     await f.service.wait();
     assert.equal(f.service.store.jobs().find((value) => value.id === job.id)!.status, 'succeeded');
   } finally {

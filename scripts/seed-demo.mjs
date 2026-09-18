@@ -17,6 +17,7 @@ const sessions = [
   {
     event: 'session_start',
     session_id: 'demo-codex',
+    session_role: 'main',
     provider: 'codex',
     client: 'vscode',
     user: 'demo-codex-user',
@@ -50,6 +51,7 @@ const sessions = [
   {
     event: 'session_start',
     session_id: 'demo-claude',
+    session_role: 'main',
     provider: 'claude',
     client: 'cli',
     user: 'demo-claude-user',

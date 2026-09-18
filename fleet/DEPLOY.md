@@ -1,8 +1,13 @@
 # Fleet deploy — central server, TLS, auth
 
-Goal: one dashboard the whole team's Claude Code points at. TLS is terminated by a
+Goal: one dashboard the team's Codex and Claude Code clients point at. TLS is terminated by a
 **Caddy** reverse proxy (automatic HTTPS); the Node server stays plain HTTP behind
 it and enforces **token auth** in-app.
+
+For developer enrollment, local project selection and the transition from live
+telemetry to Brain reviews, follow [the deployed workflow](SETUP.md#after-deploying-the-shared-dashboard).
+Each developer needs the local relay; deploying the server alone does not connect
+their clients or authorize their repositories.
 
 ```
  developers' Macs ──https──►  Caddy (:443, auto-TLS)  ──http──►  aad server (:4318)
@@ -19,17 +24,23 @@ git clone <repo> /opt/aad && cd /opt/aad && npm ci && npm run build
 ```
 
 `/etc/aad.env`:
+
 ```
 PORT=4318
 HOST=127.0.0.1
 ANONYMIZE=1
 ANONYMIZE_SALT=<random-stable-string>
-INGEST_TOKEN=<long-random-token>     # devs' machines present this
-VIEWER_TOKEN=<different-random-token> # dashboard viewers present this
+# Developers' hooks and telemetry present this token.
+INGEST_TOKEN=<long-random-token>
+# Dashboard viewers and Brain MCP clients present this separate token.
+VIEWER_TOKEN=<different-random-token>
+BRAIN_ADMIN_TOKEN=<separate-administrator-token>
 SESSION_TTL_MS=1800000
+DATABASE_URL=postgresql://<user>:<password>@<private-db-host>:5432/<database>
 ```
 
 systemd unit `/etc/systemd/system/aad.service`:
+
 ```
 [Unit]
 Description=Agent Activity Dashboard
@@ -43,6 +54,7 @@ User=aad
 [Install]
 WantedBy=multi-user.target
 ```
+
 ```bash
 sudo systemctl enable --now aad
 ```
@@ -57,6 +69,7 @@ cd /opt/aad/ui && VITE_SERVER_URL=https://agents.example.com npm run build
 ## 3. Caddy (auto-TLS + reverse proxy)
 
 `/etc/caddy/Caddyfile`:
+
 ```
 agents.example.com {
     encode zstd gzip
@@ -73,27 +86,36 @@ agents.example.com {
     }
 }
 ```
+
 Caddy fetches a certificate automatically and proxies WebSocket upgrades for `/live`
 with no extra config.
 
 ## 4. Onboard developers
 
-Each dev runs once (see `bootstrap.sh`):
+Use the cross-platform [developer setup](SETUP.md) once per developer account and
+machine:
+
 ```bash
-TEAM_ID=stream-mobile \
-DASHBOARD_URL=https://agents.example.com \
-INGEST_TOKEN=<the-ingest-token> \
-bash fleet/bootstrap.sh
+npm run agents:setup -- --url https://agents.example.com --team stream-mobile --apply
+npm run agents:projects -- --allow /absolute/path/to/project
+npm run agents:relay
 ```
-New terminal → `claude`. Their sessions show up as an anonymized agent in their
-stream. Prompt/tool **content is never sent** — only structural telemetry.
+
+Configure the administrator-provided ingest and MCP authentication separately,
+in the local relay environment (`AAD_TOKEN`) and client MCP settings respectively,
+then restart the clients and complete the trust and account setup described in
+that guide. The installer does not provision shared-server credentials.
+The local relay filters every developer's selection before sending activity to
+this shared server. An empty selection sends nothing. The older `bootstrap.sh`
+delegates to this installer for Claude; do not keep older direct hooks or shell
+exports alongside it. Hook payloads contain structural metadata, not prompt or tool content.
 
 ## 5. Viewers
 
 Open `https://agents.example.com/?token=<VIEWER_TOKEN>` once; the token is stored in
 the browser thereafter. Without a valid token, `/api/*` and `/live` return 401.
 
-That `?token=` is a one-time bootstrap on the *page* URL only: the dashboard
+That `?token=` is a one-time bootstrap on the _page_ URL only: the dashboard
 moves it into `localStorage` and strips it from the address bar immediately.
 Subsequent API calls use the `x-aad-token` header and `/live` uses the WebSocket
 subprotocol. The initial page request still contains the token in its query
@@ -102,11 +124,17 @@ already written. Configure those systems to omit or redact that query parameter,
 and do not distribute or record token-bearing URLs as ordinary links.
 
 ## Notes
+
 - **Auth is app-enforced**, so even if the port were exposed, ingest/viewer routes
   reject tokenless requests. Keep the two tokens distinct and rotate by editing
   `/etc/aad.env` + `systemctl restart aad`.
-- **Retention:** normalized detailed history is stored in SQLite and pruned
-  after 60 rolling days by default (`RETENTION_DAYS=60`).
-- **RGPD:** anonymization is on (`ANONYMIZE=1`) — no identities stored or shown. If
+- **Storage:** `DATABASE_URL` selects PostgreSQL; without it the server uses SQLite.
+  Run one application worker. Follow [POSTGRES.md](../POSTGRES.md) for explicit
+  migration, backups and the separate local Docker database.
+- **Retention:** normalized detailed history is pruned after 60 rolling days by
+  default (`RETENTION_DAYS=60`). Brain captures and analysis evidence have their own
+  lifecycle; this history retention setting does not delete them.
+- **Identity:** `ANONYMIZE=1` replaces reported email identities with pseudonyms.
+  Repository, branch and workspace metadata remain visible. If
   you ever turn it off to show names, the CSE information-consultation + registry
   entry from the brief apply first.

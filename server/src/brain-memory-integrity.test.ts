@@ -183,7 +183,7 @@ test('withdrawal during indexing cannot publish the completed dataset or replace
   const pause = gate();
   f.pages.set(pageId, 'Changed requirement that was withdrawn during indexing.');
   f.pauseIndex(pause.pause);
-  f.service.queue(original.id);
+  await f.service.queue(original.id);
   await pause.started;
   await f.service.update(original.id, { ...policy, approval: 'withdrawn' });
   pause.release();
@@ -218,8 +218,8 @@ test('a review withdrawn while retrieval is pending cannot enter returned eviden
     status: 'pending',
     reviewContent: 'A decision limited to an earlier commit.',
   };
-  f.service.store.saveSource(review);
-  f.service.queue(review.id);
+  await f.service.store.saveSource(review);
+  await f.service.queue(review.id);
   await f.service.wait();
   const specVersion = f.service.version(f.project.id);
   const pause = gate();
@@ -245,10 +245,10 @@ test('event recording rolls back both the delivery marker and queued jobs on enq
     requestedAt: new Date().toISOString(),
     attempts: 0,
   };
-  assert.throws(
-    () =>
-      f.service.store.recordEvent('transaction-test', () => {
-        f.service.store.saveJob(job);
+  await assert.rejects(
+    async () =>
+      await f.service.store.recordEvent('transaction-test', async () => {
+        await f.service.store.saveJob(job);
         throw new Error('Queue persistence failed.');
       }),
     /Queue persistence failed/,
@@ -256,18 +256,18 @@ test('event recording rolls back both the delivery marker and queued jobs on enq
   assert.ok(!f.service.store.jobs().some((candidate) => candidate.id === job.id));
   await f.restart();
   assert.equal(
-    f.service.store.recordEvent('transaction-test', () => {
-      f.service.store.saveJob(job);
+    await f.service.store.recordEvent('transaction-test', async () => {
+      await f.service.store.saveJob(job);
     }),
     true,
   );
   assert.equal(
-    f.service.store.recordEvent('transaction-test', () => {
+    await f.service.store.recordEvent('transaction-test', () => {
       assert.fail('Duplicate event must not enqueue again.');
     }),
     false,
   );
-  f.service.queue(source.id);
+  await f.service.queue(source.id);
   await f.service.wait();
   assert.equal(
     f.service.store.jobs().find((candidate) => candidate.id === job.id)!.status,
@@ -297,7 +297,7 @@ test('UTF-8 capture limits and immutable origin metadata survive subsequent edit
     '2026-09-16T10:00:00Z',
     '<content>Original content.</content>',
   );
-  f.service.store.saveCapture(original);
+  await f.service.store.saveCapture(original);
   properties.Statut = 'Brouillon';
   const changed = makeCapture(
     registration,
@@ -306,7 +306,7 @@ test('UTF-8 capture limits and immutable origin metadata survive subsequent edit
     '2026-09-17T10:00:00Z',
     '<content>Changed content.</content>',
   );
-  f.service.store.saveCapture(changed);
+  await f.service.store.saveCapture(changed);
   assert.notEqual(changed.id, original.id);
   const historical = f.service.store.capture(original.id)!;
   assert.equal(historical.origin!.properties.Statut, 'Publié');
@@ -320,13 +320,13 @@ test('bursts during a source read coalesce and the final capture uses the latest
   const pause = gate();
   f.pages.set(pageId, 'Intermediate content.');
   f.pauseRead(pause.pause);
-  const active = f.service.queue(source.id)!;
+  const active = (await f.service.queue(source.id))!;
   await pause.started;
   f.pages.set(pageId, 'Latest content after the burst.');
-  const queued = f.service.queue(source.id)!;
+  const queued = (await f.service.queue(source.id))!;
   assert.notEqual(queued.id, active.id);
-  assert.equal(f.service.queue(source.id)!.id, queued.id);
-  assert.equal(f.service.queue(source.id)!.id, queued.id);
+  assert.equal((await f.service.queue(source.id))!.id, queued.id);
+  assert.equal((await f.service.queue(source.id))!.id, queued.id);
   pause.release();
   await f.service.wait();
   assert.equal(f.service.store.jobs().filter((job) => job.sourceId === source.id).length, 3);
@@ -351,7 +351,7 @@ test('Git synchronization minimizes index content and reuses it across commits u
   await writeFile(f.projectsPath, JSON.stringify([f.project]));
   await f.service.registerProjects();
   const registration = f.service.applicable(f.project.id)[0];
-  f.service.queue(registration.id);
+  await f.service.queue(registration.id);
   await f.service.wait();
   const original = f.service.store.source(registration.id)!;
   const originalCapture = f.service.store.capture(original.currentSourceId!)!;
@@ -365,7 +365,7 @@ test('Git synchronization minimizes index content and reuses it across commits u
   await writeFile(resolve(f.root, 'feature.ts'), 'export const feature = true;\n');
   await git('add', 'feature.ts');
   await git('commit', '-m', 'Change code without changing the specification');
-  f.service.queue(registration.id);
+  await f.service.queue(registration.id);
   await f.service.wait();
   const current = f.service.store.source(registration.id)!;
   const currentCapture = f.service.store.capture(current.currentSourceId!)!;
@@ -375,7 +375,7 @@ test('Git synchronization minimizes index content and reuses it across commits u
   assert.equal(f.indexCalls.length, 1);
   assert.deepEqual(f.service.store.capture(originalCapture.id), originalCapture);
   await f.restart();
-  f.service.queue(registration.id);
+  await f.service.queue(registration.id);
   await f.service.wait();
   assert.equal(f.indexCalls.length, 1);
   const supplied = makeSource('code', 'SPEC.md', raw, currentCapture.origin!.revision);
@@ -386,7 +386,7 @@ test('Git synchronization minimizes index content and reuses it across commits u
 
   brainConfig.cognee.indexRevision = `${previousRevision}-changed-git-index`;
   await f.restart();
-  f.service.queue(registration.id);
+  await f.service.queue(registration.id);
   await f.service.wait();
   assert.equal(f.indexCalls.length, 2);
   assert.notEqual(f.service.store.source(registration.id)!.datasetId, original.datasetId);
@@ -501,8 +501,8 @@ test('legacy raw Git indexes become pending while identical safe captures reuse 
   const raw = `Keep this requirement.\nOwner: Fixture owner\n`;
   const safeCapture = makeCapture(registration, raw, {}, commit);
   const oldCapture = { ...safeCapture, id: 'legacy-raw-capture', content: raw };
-  f.service.store.saveCapture(oldCapture);
-  f.service.store.saveSource({
+  await f.service.store.saveCapture(oldCapture);
+  await f.service.store.saveSource({
     ...registration,
     status: 'ready',
     currentSourceId: oldCapture.id,
@@ -514,8 +514,11 @@ test('legacy raw Git indexes become pending while identical safe captures reuse 
   assert.equal(f.service.store.capture(oldCapture.id)!.content, raw);
   assert.equal(f.indexCalls.length, 0);
 
-  f.service.store.saveCapture(safeCapture);
-  f.service.store.saveDataset(`${safeCapture.id}:${f.service.indexVersion}`, 'legacy-safe-dataset');
+  await f.service.store.saveCapture(safeCapture);
+  await f.service.store.saveDataset(
+    `${safeCapture.id}:${f.service.indexVersion}`,
+    'legacy-safe-dataset',
+  );
   f.indexed.set('legacy-safe-dataset', safeCapture.content);
   const supplied = makeSource('code', 'SPEC.md', raw, commit);
   const retrieved = await f.service.retrieve(f.project, 'requirement', [supplied]);
@@ -532,7 +535,7 @@ test('retrieval resumes after its required synchronization while a later unrelat
   f.pages.set(pageId, 'Updated requirement.');
   const requiredPause = gate();
   f.pauseIndex(requiredPause.pause);
-  f.service.queue(original.id);
+  await f.service.queue(original.id);
   await requiredPause.started;
   const otherPage = 'd'.repeat(32);
   f.pages.set(otherPage, 'A different project requirement.');
@@ -568,15 +571,15 @@ test('work queued as the worker finishes is picked up without another synchroniz
   const original = await f.register();
   const saveJob = f.service.store.saveJob.bind(f.service.store);
   let queuedAtCompletion = false;
-  f.service.store.saveJob = (job) => {
-    saveJob(job);
+  f.service.store.saveJob = async (job) => {
+    await saveJob(job);
     if (!queuedAtCompletion && job.sourceId === original.id && job.status === 'succeeded') {
       queuedAtCompletion = true;
       // Queue after drain observes no more work, before its finalizer releases the worker.
       queueMicrotask(() => queueMicrotask(() => f.service.queue(original.id)));
     }
   };
-  f.service.queue(original.id);
+  await f.service.queue(original.id);
   await f.service.wait();
   const jobs = f.service.store.jobs().filter((job) => job.sourceId === original.id);
   assert.equal(jobs.length, 3);

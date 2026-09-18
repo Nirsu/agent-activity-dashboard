@@ -9,11 +9,16 @@ interface Day {
   tokensOut: number;
   prompts: number;
   sessions: number;
+  costKnown: boolean;
+  tokensKnown: boolean;
+  unknownUsageCount: number;
+  unattributedCostUsd: number;
 }
 interface TrendsData {
   enabled: boolean;
+  backend?: string;
   days: Day[];
-  byStream: Array<{ teamId: string; costUsd: number; tokens: number }>;
+  byStream: Array<{ teamId: string; costUsd: number; tokens: number; costKnown: boolean }>;
 }
 
 const WIDTH = 720;
@@ -22,13 +27,14 @@ const PAD = { l: 8, r: 8, t: 10, b: 22 };
 
 export function Trends() {
   const [d, setD] = useState<TrendsData | null>(null);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const load = () =>
       apiFetch('/api/trends?days=14')
-        .then((r) => r.json())
-        .then(setD)
-        .catch(() => setD({ enabled: false, days: [], byStream: [] }));
+        .then((r) => { if (!r.ok) throw new Error('History request failed'); return r.json(); })
+        .then((data) => { setD(data); setError(false); })
+        .catch(() => setError(true));
     load();
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
@@ -41,36 +47,47 @@ export function Trends() {
       tokens: days.reduce((a, x) => a + x.tokensIn + x.tokensOut, 0),
       prompts: days.reduce((a, x) => a + x.prompts, 0),
       sessions: days.reduce((a, x) => a + x.sessions, 0),
+      costKnown: days.some((x) => x.costKnown),
+      tokensKnown: days.some((x) => x.tokensKnown),
+      unknown: days.reduce((a, x) => a + x.unknownUsageCount, 0),
+      unattributed: days.reduce((a, x) => a + x.unattributedCostUsd, 0),
     };
   }, [d]);
 
   if (d && !d.enabled)
     return (
       <div className="trends-empty">
-        History persistence is not enabled on this server (SQLite unavailable). Trends appear once
+        History is unavailable on this server. Trends appear once
         the server persists events.
       </div>
     );
-  if (!d) return <div className="trends-empty">Loading trends…</div>;
+  if (!d) return <div className="trends-empty">{error ? 'History could not be loaded. Retrying…' : 'Loading trends…'}</div>;
 
   const days = d.days;
   const maxCost = Math.max(0.0001, ...days.map((x) => x.costUsd));
-  const bw = (WIDTH - PAD.l - PAD.r) / days.length;
+  const bw = (WIDTH - PAD.l - PAD.r) / Math.max(1, days.length);
   const chartH = HEIGHT - PAD.t - PAD.b;
   const maxStreamCost = Math.max(0.0001, ...d.byStream.map((s) => s.costUsd));
 
   return (
     <div className="trends">
+      {error && <p role="status">History refresh failed. Showing the last received data.</p>}
+      <p>
+        {d.backend === 'postgres' ? 'PostgreSQL' : 'SQLite'} history · all providers and streams · known usage only.
+        {' '}{totals.unknown} usage observations have an unknown cost.
+        {' '}{usd(totals.unattributed)} is not linked to a ticket or work item.
+        {' '}Session totals count daily appearances; they are not unique over the whole period.
+      </p>
       <div className="trends-tiles">
-        <Tile label="Cost · 14d" value={usd(totals.cost)} accent />
-        <Tile label="Tokens · 14d" value={tokens(totals.tokens)} />
+        <Tile label="Known cost · 14d" value={totals.costKnown ? usd(totals.cost) : 'Unavailable'} accent />
+        <Tile label="Known tokens · 14d" value={totals.tokensKnown ? tokens(totals.tokens) : 'Unavailable'} />
         <Tile label="Prompts · 14d" value={String(totals.prompts)} />
         <Tile label="Sessions · 14d" value={String(totals.sessions)} />
       </div>
 
       <div className="trends-chart-card">
-        <div className="trends-chart-title">Cost per day</div>
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="trends-svg" role="img" aria-label="Cost per day">
+        <div className="trends-chart-title">Known cost per day · missing usage is excluded</div>
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="trends-svg" role="img" aria-label="Known cost per day">
           {days.map((x, i) => {
             const h = (x.costUsd / maxCost) * chartH;
             const bx = PAD.l + i * bw;
@@ -86,7 +103,7 @@ export function Trends() {
                   rx={3}
                   className="trends-bar"
                 >
-                  <title>{`${x.day}: ${usd(x.costUsd)} · ${x.prompts} prompts · ${x.sessions} sessions`}</title>
+                  <title>{`${x.day}: ${x.costKnown ? usd(x.costUsd) : 'cost unavailable'} · ${x.unknownUsageCount} unknown · ${x.prompts} prompts · ${x.sessions} sessions`}</title>
                 </rect>
                 {showLabel && (
                   <text x={bx + bw / 2} y={HEIGHT - 6} textAnchor="middle" className="trends-axis">
@@ -108,7 +125,7 @@ export function Trends() {
             <div className="trends-stream-bar">
               <div className="trends-stream-fill" style={{ width: `${(s.costUsd / maxStreamCost) * 100}%` }} />
             </div>
-            <span className="trends-stream-val">{usd(s.costUsd)}</span>
+            <span className="trends-stream-val">{s.costKnown ? usd(s.costUsd) : 'Unavailable'}</span>
           </div>
         ))}
       </div>

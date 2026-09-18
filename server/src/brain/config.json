@@ -18,7 +18,8 @@
     "maxTextCharacters": 3000,
     "maxQuoteCharacters": 4000,
     "maxTitleCharacters": 160,
-    "maxRequirementIdCharacters": 40
+    "maxRequirementIdCharacters": 40,
+    "maxCorrelationCharacters": 256
   },
   "projects": {
     "maxProjects": 20,
@@ -79,6 +80,7 @@
     "labelCharacters": 36
   },
   "ui": {
+    "boardRecentRuns": 3,
     "pollIntervalMs": 2000,
     "citationContextLines": 12
   },

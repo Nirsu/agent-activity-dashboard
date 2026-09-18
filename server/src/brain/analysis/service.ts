@@ -1,11 +1,11 @@
 import { brainConfig } from '../config.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type Database from 'better-sqlite3';
+import { BrainStorage } from '../persistence.js';
 import { config } from '../../config.js';
+import { estimateModelCost } from '../../model-cost.js';
 import type { Source } from '../sources.js';
 import type { SourceExcerpt } from '../memory/types.js';
 import { OpenAIClient } from './openai.js';
@@ -14,6 +14,9 @@ import { applySubmittedFiles, submissionInfo, validateSubmittedFiles } from './s
 import { arbitrationSchema, comparisonSchema, readingSchema } from './schemas.js';
 import type {
   AgentRole,
+  BrainActivity,
+  BrainCorrelation,
+  BrainModelCall,
   AnalysisRun,
   ArbitrationDossier,
   BrainAgentsOptions,
@@ -43,6 +46,38 @@ const stages: Record<AgentRole, string> = {
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function validateCorrelation(value?: BrainCorrelation): BrainCorrelation | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const result: BrainCorrelation = {};
+  for (const key of ['workItemId', 'ticket', 'originSessionId', 'parentRunId'] as const) {
+    if (value[key] !== undefined) {
+      const text = requireText(value[key], brainConfig.analysis.maxCorrelationCharacters).trim();
+      if (/[\u0000-\u001f]/.test(text)) {
+        fail('Correlation identifiers cannot contain control characters.');
+      }
+      result[key] = text;
+    }
+  }
+  return result;
+}
+
+function publicStage(run: AnalysisRun): string {
+  const allowed = [
+    'Capturing sources',
+    'Retrieving project and shared memory',
+    ...Object.values(stages),
+  ];
+  if (run.status === 'failed' || run.status === 'interrupted') {
+    return 'Analysis stopped';
+  }
+  if (run.status === 'succeeded') {
+    return 'Analysis complete';
+  }
+  return allowed.includes(run.stage) ? run.stage : 'Processing analysis';
 }
 
 function formatSources(sources: Source[], excerpts?: SourceExcerpt[]) {
@@ -116,7 +151,13 @@ function createFindings(
 
 // One active analysis keeps the embedded pilot storage and model usage bounded.
 export class BrainAgents {
-  private db!: Database.Database;
+  private readonly storage: BrainStorage;
+  private readonly onActivity: BrainAgentsOptions['onActivity'];
+  private delivering: Promise<void> | null = null;
+  private starting = false;
+  private initialized = false;
+  private closing: Promise<void> | null = null;
+  private reviewing = false;
   private running: Promise<void> | null = null;
   private activeRunId: string | null = null;
   private readonly projectsPath: string;
@@ -133,6 +174,8 @@ export class BrainAgents {
   constructor(options: BrainAgentsOptions = {}) {
     this.dbPath =
       options.dbPath ?? process.env.BRAIN_DB_PATH ?? resolve(config.dataDir, 'brain.db');
+    this.storage = new BrainStorage(this.dbPath, ['brain_agent_runs', 'brain_activity_events'], 1);
+    this.onActivity = options.onActivity;
     this.projectsPath =
       options.projectsPath ??
       process.env.BRAIN_PROJECTS_PATH ??
@@ -171,64 +214,205 @@ export class BrainAgents {
   }
 
   async init() {
-    const { default: Sqlite } = await import('better-sqlite3');
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = new Sqlite(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.exec(`CREATE TABLE IF NOT EXISTS brain_agent_runs (
-      id TEXT PRIMARY KEY,
-      data TEXT NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0
-    )`);
-    const columns = this.db.pragma('table_info(brain_agent_runs)') as { name: string }[];
-    if (!columns.some((column) => column.name === 'revision')) {
-      this.db.exec('ALTER TABLE brain_agent_runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0');
-    }
-
-    const interrupted = this.db
-      .prepare("SELECT data FROM brain_agent_runs WHERE json_extract(data, '$.status') = 'running'")
-      .all() as { data: string }[];
+    await this.storage.init();
+    this.initialized = true;
+    const interrupted = this.storage
+      .entries<AnalysisRun>('brain_agent_runs')
+      .filter(({ data }) => data.status === 'running');
     for (const row of interrupted) {
-      const run: AnalysisRun = JSON.parse(row.data);
+      const run: AnalysisRun = row.data;
       run.status = 'interrupted';
       run.error = 'Server stopped during analysis. Restart the analysis explicitly.';
       run.finishedAt = new Date().toISOString();
-      this.saveRun(run);
+      for (const call of run.calls ?? []) {
+        if (call.status === 'running') {
+          call.status = 'interrupted';
+          call.finishedAt = run.finishedAt;
+        }
+      }
+      await this.saveRun(run);
+      await this.activity(run, 'brain_analysis', 'interrupted', `${run.id}:interrupted`);
     }
+    // Repair the small crash window between a durable call result and its outbox entry.
+    for (const { data: run } of this.storage.entries<AnalysisRun>('brain_agent_runs')) {
+      for (const call of run.calls ?? []) {
+        if (
+          call.status !== 'running' &&
+          !this.storage.get('brain_activity_events', `${call.id}:completed`)
+        ) {
+          await this.activity(run, 'brain_model_call', call.status, `${call.id}:completed`, call);
+        }
+      }
+    }
+    await this.deliverActivity();
   }
 
-  async close() {
-    await this.client.close();
-    await this.running;
-    this.db.close();
+  close() {
+    this.closing ??= (async () => {
+      try {
+        await this.client.close();
+        await this.running;
+        if (this.initialized) {
+          await this.deliverActivity();
+        }
+      } finally {
+        await this.storage.close();
+      }
+    })();
+    return this.closing;
   }
 
   async wait() {
     await this.running;
   }
 
-  private saveRun(run: AnalysisRun) {
-    this.db
-      .prepare(
-        `INSERT INTO brain_agent_runs (id, data, revision) VALUES (?, ?, 1)
-         ON CONFLICT(id) DO UPDATE SET
-           data = excluded.data,
-           revision = brain_agent_runs.revision + 1`,
-      )
-      .run(run.id, JSON.stringify(run));
+  private async saveRun(run: AnalysisRun) {
+    await this.storage.put('brain_agent_runs', run.id, run);
+  }
+
+  private async activity(
+    run: AnalysisRun,
+    kind: BrainActivity['kind'],
+    phase: BrainActivity['phase'],
+    id: string,
+    call?: BrainModelCall,
+  ) {
+    const event: BrainActivity = {
+      id,
+      ts:
+        phase === 'started'
+          ? Date.parse(call?.startedAt ?? run.startedAt)
+          : call?.finishedAt || run.finishedAt
+            ? Date.parse(call?.finishedAt ?? run.finishedAt!)
+            : Date.now(),
+      kind,
+      phase,
+      runId: run.id,
+      projectId: run.projectId,
+      projectName: run.projectName,
+      model: call?.model ?? run.model,
+      stage: publicStage(run),
+      ...run.correlation,
+      role: call?.role,
+      inputTokens: call?.inputTokens,
+      outputTokens: call?.outputTokens,
+      cachedInputTokens: call?.cachedInputTokens,
+      reasoningTokens: call?.reasoningTokens,
+      usageKnown: call?.usageKnown,
+      costUsd: call ? call.costUsd : undefined,
+      startedAt: call?.startedAt ?? run.startedAt,
+      finishedAt: call?.finishedAt ?? run.finishedAt,
+      findingCount: run.findings.length,
+      differenceCount: run.findings.filter((finding) => finding.outcome === 'difference').length,
+    };
+    await this.storage.put('brain_activity_events', id, { event, delivered: false }, true);
+    await this.deliverActivity();
+  }
+
+  private async deliverActivity(): Promise<void> {
+    if (!this.onActivity) {
+      return;
+    }
+    if (this.delivering) {
+      return this.delivering;
+    }
+    this.delivering = (async () => {
+      const pending = this.storage
+        .entries<{ event: BrainActivity; delivered: boolean }>('brain_activity_events')
+        .reverse()
+        .filter(({ data }) => !data.delivered);
+      for (const { data } of pending) {
+        try {
+          await this.onActivity!(data.event);
+        } catch {
+          // Retain the event for retry. Its stable ID makes history ingestion idempotent.
+          break;
+        }
+        await this.storage.put('brain_activity_events', data.event.id, {
+          ...data,
+          delivered: true,
+        });
+      }
+    })().finally(() => {
+      this.delivering = null;
+    });
+    return this.delivering;
+  }
+
+  async overview() {
+    await this.deliverActivity();
+    const runs = this.storage
+      .entries<AnalysisRun>('brain_agent_runs')
+      .slice(0, brainConfig.memory.maxRecentRuns)
+      .map(({ data: run }) => ({
+        id: run.id,
+        projectId: run.projectId,
+        projectName: run.projectName,
+        status: run.status,
+        stage: publicStage(run),
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        model: run.model,
+        commit: run.commit,
+        submissionId: run.submission?.id,
+        correlation: run.correlation,
+        ...run.correlation,
+        usage: run.usage,
+        usageKnown: Boolean(run.calls?.length) && run.calls!.every((call) => call.usageKnown),
+        costUsd:
+          run.calls?.length && run.calls.every((call) => call.costUsd !== null)
+            ? run.calls.reduce((sum, call) => sum + call.costUsd!, 0)
+            : null,
+        knownCostUsd: run.calls?.reduce((sum, call) => sum + (call.costUsd ?? 0), 0) ?? 0,
+        costStatus:
+          run.calls?.length && run.calls.every((call) => call.costUsd !== null)
+            ? 'estimated'
+            : 'unknown',
+        activeRole: run.calls?.find((call) => call.status === 'running')?.role,
+        callCount: run.calls?.length ?? null,
+        findingCount: run.findings.length,
+        differenceCount: run.findings.filter((finding) => finding.outcome === 'difference').length,
+        pendingReviewCount: run.findings.filter(
+          (finding) =>
+            finding.outcome === 'difference' &&
+            (!finding.reviews.length || finding.reviews[0].decision === 'investigate'),
+        ).length,
+      }));
+    return { activeRunId: this.activeRunId, runs, memoryCostStatus: 'unmeasured' as const };
+  }
+
+  async start(
+    projectId: string,
+    commit?: string,
+    baseCommit?: string,
+    feature?: string,
+    submittedFiles?: SubmittedFile[],
+    correlation?: BrainCorrelation,
+  ) {
+    if (this.starting || this.running || this.reviewing) {
+      fail('An AI analysis or human review is already running.', 409);
+    }
+    this.starting = true;
+    try {
+      return await this.startRun(
+        projectId,
+        commit,
+        baseCommit,
+        feature,
+        submittedFiles,
+        correlation,
+      );
+    } finally {
+      this.starting = false;
+    }
   }
 
   private async projectStates(projects: Project[]) {
     const entries = await Promise.all(
       projects.map(async (project) => {
-        const latest = this.db
-          .prepare(
-            `SELECT id FROM brain_agent_runs
-             WHERE json_extract(data, '$.projectId') = ?
-               AND json_extract(data, '$.status') = 'succeeded'
-             ORDER BY rowid DESC LIMIT 1`,
-          )
-          .get(project.id) as { id: string } | undefined;
+        const latest = this.storage
+          .entries<AnalysisRun>('brain_agent_runs')
+          .find(({ data }) => data.projectId === project.id && data.status === 'succeeded')?.data;
         const state: ProjectState = {
           latestRunId: latest?.id,
           projectVersion: hash(JSON.stringify(project)),
@@ -241,12 +425,11 @@ export class BrainAgents {
   }
 
   private getRun(id: string): AnalysisRun {
-    const row = this.db.prepare('SELECT data FROM brain_agent_runs WHERE id=?').get(id) as
-      { data: string } | undefined;
-    if (!row) {
+    const run = this.storage.get<AnalysisRun>('brain_agent_runs', id);
+    if (!run) {
       fail('Analysis not found.', 404);
     }
-    return JSON.parse(row.data);
+    return run;
   }
 
   async state() {
@@ -264,14 +447,9 @@ export class BrainAgents {
       reason = this.configurationError();
     }
     const projectsState = await this.projectStates(projects);
-    const rows = this.db
-      .prepare(
-        `SELECT json_set(
-          json_remove(data, '$.sources', '$.requirements', '$.findings'),
-          '$.findingCount', json_array_length(data, '$.findings')
-        ) AS summary, revision FROM brain_agent_runs ORDER BY rowid DESC LIMIT ?`,
-      )
-      .all(brainConfig.memory.maxRecentRuns) as { summary: string; revision: number }[];
+    const rows = this.storage
+      .entries<AnalysisRun>('brain_agent_runs')
+      .slice(0, brainConfig.memory.maxRecentRuns);
 
     return {
       configured: !reason,
@@ -287,7 +465,8 @@ export class BrainAgents {
         specifications: project.specs.length,
       })),
       runs: rows.map((row) => {
-        const summary: RunSummary = JSON.parse(row.summary);
+        const { sources, requirements, findings, ...fields } = row.data;
+        const summary: RunSummary = { ...fields, findingCount: findings.length };
         const { projectVersion, ...run } = summary;
         return {
           ...run,
@@ -369,12 +548,13 @@ export class BrainAgents {
     };
   }
 
-  async start(
+  private async startRun(
     projectId: string,
     commit?: string,
     baseCommit?: string,
     feature?: string,
     submittedFiles?: SubmittedFile[],
+    correlation?: BrainCorrelation,
   ) {
     if (this.running) {
       fail('An AI analysis is already running.', 409);
@@ -428,8 +608,11 @@ export class BrainAgents {
       requirements: [],
       findings: [],
       changedFiles: [],
+      correlation: validateCorrelation(correlation),
+      calls: [],
     };
-    this.saveRun(run);
+    await this.saveRun(run);
+    await this.activity(run, 'brain_analysis', 'started', `${run.id}:started`);
     this.activeRunId = run.id;
     this.running = this.execute(run, project, submission).finally(() => {
       this.running = null;
@@ -439,6 +622,24 @@ export class BrainAgents {
   }
 
   async review(
+    id: string,
+    findingId: string,
+    decision: string,
+    note: string,
+    expectedReviewId = '',
+  ) {
+    if (this.reviewing || this.starting) {
+      fail('Another analysis or review is starting. Refresh and retry.', 409);
+    }
+    this.reviewing = true;
+    try {
+      return await this.reviewFinding(id, findingId, decision, note, expectedReviewId);
+    } finally {
+      this.reviewing = false;
+    }
+  }
+
+  private async reviewFinding(
     id: string,
     findingId: string,
     decision: string,
@@ -482,7 +683,8 @@ export class BrainAgents {
       actor: 'Pilot session (unverified identity)',
     };
     finding.reviews.unshift(review);
-    this.saveRun(run);
+    await this.saveRun(run);
+    await this.activity(run, 'brain_review', 'completed', `${run.id}:review:${review.id}`);
     try {
       await this.memory!.recordReview(run, finding, review);
     } catch {
@@ -492,15 +694,16 @@ export class BrainAgents {
         message:
           'Human review saved. Memory indexing could not be queued; check synchronization before the next analysis.',
       });
-      this.saveRun(latest);
+      await this.saveRun(latest);
     }
     return review;
   }
 
-  private progress(run: AnalysisRun, message: string) {
+  private async progress(run: AnalysisRun, message: string) {
     run.stage = message;
     run.events.push({ at: new Date().toISOString(), message });
-    this.saveRun(run);
+    await this.saveRun(run);
+    await this.activity(run, 'brain_analysis', 'progress', `${run.id}:stage:${run.events.length}`);
   }
 
   private async invoke(
@@ -511,19 +714,58 @@ export class BrainAgents {
     schema: Record<string, unknown>,
   ) {
     await this.requireCurrentContext(run);
-    this.progress(run, stages[role]);
+    await this.progress(run, stages[role]);
     if (JSON.stringify(input).length > brainConfig.analysis.maxInputCharacters) {
       fail('AI input is too large: narrow the scope.');
     }
 
-    const response = await this.callModel(role, prompt, input, schema);
-    run.usage.inputTokens += response.inputTokens;
-    run.usage.outputTokens += response.outputTokens;
-    this.saveRun(run);
-    if (response.error) {
-      fail(response.error);
+    run.calls ??= [];
+    const call: BrainModelCall = {
+      id: `${run.id}:call:${run.calls.length + 1}`,
+      role,
+      model: run.model,
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      inputTokens: 0,
+      outputTokens: 0,
+      usageKnown: false,
+      costUsd: null,
+    };
+    run.calls.push(call);
+    await this.saveRun(run);
+    await this.activity(run, 'brain_model_call', 'started', `${call.id}:started`, call);
+    try {
+      const response = await this.callModel(role, prompt, input, schema);
+      call.inputTokens = response.inputTokens;
+      call.outputTokens = response.outputTokens;
+      call.cachedInputTokens = response.cachedInputTokens;
+      call.reasoningTokens = response.reasoningTokens;
+      call.usageKnown = response.usageKnown ?? true;
+      call.model = response.model ?? run.model;
+      call.responseId = response.responseId;
+      call.costUsd = call.usageKnown ? estimateModelCost(call) : null;
+      run.usage.inputTokens += response.inputTokens;
+      run.usage.outputTokens += response.outputTokens;
+      if (response.error) {
+        fail(response.error);
+      }
+      const value = requireObject(response.value);
+      call.status = 'completed';
+      return value;
+    } catch (error) {
+      call.status = 'failed';
+      throw error;
+    } finally {
+      call.finishedAt = new Date().toISOString();
+      await this.saveRun(run);
+      await this.activity(
+        run,
+        'brain_model_call',
+        call.status === 'completed' ? 'completed' : 'failed',
+        `${call.id}:completed`,
+        call,
+      );
     }
-    return requireObject(response.value);
   }
 
   private async requireCurrentContext(run: AnalysisRun) {
@@ -543,7 +785,7 @@ export class BrainAgents {
       if (submission) {
         applySubmittedFiles(run, project, submission);
       }
-      this.progress(run, 'Retrieving project and shared memory');
+      await this.progress(run, 'Retrieving project and shared memory');
       const code = run.sources.filter((source) => source.status === 'observed');
       const capturedSpecifications = run.sources.filter((source) => source.status === 'published');
       const query = [project.name, project.scope, run.feature, ...run.changedFiles]
@@ -566,7 +808,7 @@ export class BrainAgents {
       ) {
         fail('Retrieved scope is too large: narrow the feature or selected source pages.');
       }
-      this.saveRun(run);
+      await this.saveRun(run);
 
       const prompts = await Promise.all(
         ['reader', 'comparison', 'arbitration'].map((role) =>
@@ -608,10 +850,10 @@ export class BrainAgents {
         specifications,
         retrieved.excerpts,
       );
-      this.saveRun(run);
+      await this.saveRun(run);
 
       if (run.requirements.length === 0) {
-        this.progress(
+        await this.progress(
           run,
           `No applicable requirements extracted: ${requireText(reading.summary)} No conclusion about the code.`,
         );
@@ -653,7 +895,8 @@ export class BrainAgents {
       await this.requireCurrentContext(run);
       run.status = 'succeeded';
       run.finishedAt = new Date().toISOString();
-      this.progress(run, 'Analysis complete · decisions require human review');
+      await this.progress(run, 'Analysis complete · decisions require human review');
+      await this.activity(run, 'brain_analysis', 'completed', `${run.id}:completed`);
     } catch (error) {
       run.status = 'failed';
       run.finishedAt = new Date().toISOString();
@@ -661,7 +904,8 @@ export class BrainAgents {
         error instanceof Error && 'statusCode' in error
           ? error.message
           : 'Analysis interrupted. Check the model, sources, and commits available to the server. No validated results.';
-      this.saveRun(run);
+      await this.saveRun(run);
+      await this.activity(run, 'brain_analysis', 'failed', `${run.id}:failed`);
     }
   }
 }

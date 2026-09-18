@@ -106,11 +106,11 @@ export async function registerMemoryWebhooks(
       }
     }
 
-    function enqueue(provider: 'notion' | 'github', id: string, sourceIds: string[]) {
+    async function enqueue(provider: 'notion' | 'github', id: string, sourceIds: string[]) {
       let queued = 0;
-      const recorded = service.store.recordEvent(`${provider}:${id}`, () => {
+      const recorded = await service.store.recordEvent(`${provider}:${id}`, async () => {
         for (const sourceId of sourceIds) {
-          if (service.queue(sourceId)) {
+          if (await service.queue(sourceId)) {
             queued += 1;
           }
         }
@@ -122,7 +122,7 @@ export async function registerMemoryWebhooks(
     webhooks.post<{ Body: Buffer }>(
       '/api/brain/webhooks/notion',
       routeOptions,
-      (request, reply) => {
+      async (request, reply) => {
         const payload = parse(request.body, request.headers['x-notion-signature'], notionToken);
         if ('verification_token' in payload) {
           fail(
@@ -162,14 +162,14 @@ export async function registerMemoryWebhooks(
         if (!sourceIds.length) {
           return reply.code(202).send({ accepted: true, ignored: true });
         }
-        return reply.code(202).send(enqueue('notion', id, sourceIds));
+        return reply.code(202).send(await enqueue('notion', id, sourceIds));
       },
     );
 
     webhooks.post<{ Body: Buffer }>(
       '/api/brain/webhooks/github',
       routeOptions,
-      (request, reply) => {
+      async (request, reply) => {
         const payload = parse(request.body, request.headers['x-hub-signature-256'], githubSecret);
         const id = eventId(request.headers['x-github-delivery']);
         if (request.headers['x-github-event'] !== 'push') {
@@ -193,7 +193,7 @@ export async function registerMemoryWebhooks(
         if (!sourceIds.length) {
           return reply.code(202).send({ accepted: true, ignored: true });
         }
-        return reply.code(202).send(enqueue('github', id, sourceIds));
+        return reply.code(202).send(await enqueue('github', id, sourceIds));
       },
     );
   });

@@ -1,402 +1,802 @@
 import { EventEmitter } from 'node:events';
 import type {
   AgentEvent,
+  AgentProvider,
   Aggregate,
+  CumulativeSnapshot,
   SessionState,
   SessionStatus,
+  SessionUsageTotals,
+  UsageDelta,
+  ProviderAggregates,
 } from '../types.js';
 import { config } from '../config.js';
 import { agentLabel } from '../identity.js';
+import { UsageAccounting } from './accounting.js';
+import {
+  PromptTracker,
+  PROMPT_WINDOW_MS,
+  PROMPT_PAIR_WINDOW_MS,
+  type PromptMatch,
+} from './prompts.js';
+import { groupSessions } from '../session-hierarchy.js';
 
 function startOfLocalDay(now = Date.now()): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function emptyTotals(): SessionUsageTotals {
+  return { costUsd: 0, tokensIn: 0, tokensOut: 0, costKnown: false, tokensKnown: false };
+}
+
+function emptyProviderAggregate(): Aggregate {
+  return {
+    activeSessions: 0,
+    promptsLastHour: 0,
+    costTodayUsd: 0,
+    tokensTodayInput: 0,
+    tokensTodayOutput: 0,
+    costKnown: false,
+    tokensKnown: false,
+    unknownUsageCount: 0,
+    editWriteAccepts: 0,
+    editWriteRejects: 0,
+    recentErrors: [],
+  };
 }
 
 /**
- * Live store. Holds a bounded ring buffer of recent events and derives
- * per-session state + aggregate counters. Privacy-safe history persistence is
- * subscribed separately in db.ts.
- *
- * Emits:
- *   'event'    (event: AgentEvent)          — one normalized event ingested
- *   'sessions' (sessions, aggregate)        — derived state changed
+ * Live projections of normalized events. Accounting emits one `usage` delta per
+ * canonical observation; `cumulative` carries counter baselines, including flat
+ * samples. Persist usage and its attached baseline in the same transaction.
  */
 export class Store extends EventEmitter {
   private ring: AgentEvent[] = [];
   private sessions = new Map<string, SessionState>();
-
-  // Last-seen cumulative metric values per session (Claude Code emits
-  // cost.usage / token.usage as monotonic cumulative sums). Kept separate from
-  // `sessions` so day-counter deltas survive card eviction (session_end).
-  private metricAgg = new Map<string, { cost: number; tokens: Record<string, number> }>();
-
-  // Best-known agent label per session. Set once from an identity-bearing event
-  // (session_start carries the email) so later identity-less events (metrics,
-  // hooks) reuse the SAME person label instead of a weaker session-based one —
-  // this is what makes one person's multiple sessions share a pseudonym.
+  private sessionContext = new Map<string, SessionState>();
+  private usageContexts = new Map<
+    string,
+    Array<{ ts: number; key: string; context: SessionState }>
+  >();
+  private sessionTotals = new Map<string, SessionUsageTotals>();
+  private endedSessions = new Set<string>();
+  private stoppedTurns = new Set<string>();
+  private accounting = new UsageAccounting();
+  private prompts = new PromptTracker();
+  private seenEvents = new Set<string>();
+  private externalUsageIds = new Map<string, number>();
   private agentBySession = new Map<string, string>();
+  private sessionLastSeen = new Map<string, number>();
+  private nextPruneAt = 0;
 
-  // Running counters (survive ring-buffer eviction), reset at local midnight.
   private dayStart = startOfLocalDay();
   private costTodayUsd = 0;
   private tokensInToday = 0;
   private tokensOutToday = 0;
+  private costKnown = false;
+  private knownCostCount = 0;
+  private providerKnownCostCounts = { claude: 0, codex: 0 };
+  private tokensKnown = false;
+  private unknownUsageCount = 0;
   private editWriteAccepts = 0;
   private editWriteRejects = 0;
+  private providerTotals: ProviderAggregates = {
+    claude: emptyProviderAggregate(),
+    codex: emptyProviderAggregate(),
+  };
+  private readonly sweepTimer: ReturnType<typeof setInterval>;
 
   constructor() {
     super();
-    // Idle sweeper + TTL eviction.
-    setInterval(() => this.sweep(), 5_000).unref();
+    this.sweepTimer = setInterval(() => this.sweep(), 5_000);
+    this.sweepTimer.unref();
   }
 
-  /** Boot-time: restore per-session cumulative baselines from persistence. */
-  restoreCumulative(map: Map<string, { cost: number; tokens: Record<string, number> }>): void {
-    this.metricAgg = map;
+  close(): void {
+    clearInterval(this.sweepTimer);
+    this.removeAllListeners();
   }
 
-  /** Boot-time: seed today's running counters from persisted totals. */
-  hydrateToday(t: { costUsd: number; tokensIn: number; tokensOut: number }): void {
-    this.costTodayUsd = t.costUsd;
-    this.tokensInToday = t.tokensIn;
-    this.tokensOutToday = t.tokensOut;
+  restoreCumulative(snapshots: Map<string, CumulativeSnapshot>): void {
+    this.accounting.restoreCumulative(snapshots);
   }
 
-  ingest(event: AgentEvent): void {
-    this.rolloverDayIfNeeded(event.ts);
+  restoreUsageIds(ids: Iterable<string>): void {
+    const restored = [...ids];
+    this.accounting.restoreUsageIds(restored);
+    this.externalUsageIds = new Map(restored.map((id) => [id, Date.now()]));
+  }
 
-    // Pseudonymize identity at the ingest boundary. A person label (from the
-    // email) is authoritative and remembered per session; identity-less events
-    // reuse it so the same person keeps one label across all their sessions.
+  restoreUsageIdentityMap(identities: Map<string, string>): void {
+    this.accounting.restoreUsageIdentityMap(identities);
+  }
+
+  restoreRequestUsage(observations: UsageDelta[]): void {
+    this.accounting.restoreRequestUsage(observations);
+  }
+
+  restoreSessionTotals(totals: Map<string, SessionUsageTotals>): void {
+    this.sessionTotals = new Map(totals);
+    for (const id of totals.keys()) {
+      this.sessionLastSeen.set(id, Date.now());
+    }
+  }
+
+  restorePrompts(events: AgentEvent[]): void {
+    for (const event of events) {
+      this.prompts.record(event);
+    }
+  }
+
+  hydrateToday(
+    totals: {
+      costUsd: number;
+      tokensIn: number;
+      tokensOut: number;
+      costKnown?: boolean;
+      knownCostCount?: number;
+      tokensKnown?: boolean;
+      unknownUsageCount?: number;
+    },
+    provider?: AgentProvider,
+  ): void {
+    this.dayStart = startOfLocalDay();
+    if (provider) {
+      this.providerKnownCostCounts[provider] =
+        totals.knownCostCount ?? Number(totals.costKnown ?? totals.costUsd > 0);
+      Object.assign(this.providerTotals[provider], {
+        costTodayUsd: totals.costUsd,
+        tokensTodayInput: totals.tokensIn,
+        tokensTodayOutput: totals.tokensOut,
+        costKnown: totals.costKnown ?? totals.costUsd > 0,
+        tokensKnown: totals.tokensKnown ?? totals.tokensIn + totals.tokensOut > 0,
+        unknownUsageCount: totals.unknownUsageCount ?? 0,
+      });
+      return;
+    }
+    this.costTodayUsd = totals.costUsd;
+    this.knownCostCount = totals.knownCostCount ?? Number(totals.costKnown ?? totals.costUsd > 0);
+    this.tokensInToday = totals.tokensIn;
+    this.tokensOutToday = totals.tokensOut;
+    this.costKnown = totals.costKnown ?? totals.costUsd > 0;
+    this.tokensKnown = totals.tokensKnown ?? totals.tokensIn + totals.tokensOut > 0;
+    this.unknownUsageCount = totals.unknownUsageCount ?? 0;
+  }
+
+  /** Called after a Brain usage record is durably inserted; never creates a session. */
+  ingestExternalUsage(usage: UsageDelta): void {
+    if (usage.ts < this.retentionCutoff() || this.externalUsageIds.has(usage.usageId)) {
+      return;
+    }
+    this.externalUsageIds.set(usage.usageId, usage.ts);
+    this.rolloverDayIfNeeded();
+    this.applyUsageToDay(usage);
+    this.emit('sessions', this.getSessions(), this.getAggregate());
+  }
+
+  ingest(input: AgentEvent): void {
+    // Once deduplication state expires, replayed old exports must also expire.
+    if (input.ts < this.retentionCutoff()) {
+      return;
+    }
+    const event = this.normalizeSession(input);
+    if (event.sessionId) {
+      this.sessionLastSeen.set(
+        event.sessionId,
+        Math.max(this.sessionLastSeen.get(event.sessionId) ?? 0, event.ts),
+      );
+    }
+    const eventKey = `${event.provider}:${event.id}`;
+    if (this.seenEvents.has(eventKey)) {
+      return;
+    }
+    this.seenEvents.add(eventKey);
+    if (this.seenEvents.size > Math.max(config.ringSize * 10, 1_000)) {
+      const oldest = this.seenEvents.values().next().value;
+      if (oldest !== undefined) {
+        this.seenEvents.delete(oldest);
+      }
+    }
+    this.rolloverDayIfNeeded();
+    this.resolveIdentity(event);
+    this.ring.push(event);
+    if (this.ring.length > config.ringSize) {
+      this.ring.shift();
+    }
+
+    const prompt =
+      event.ts >= Date.now() - PROMPT_WINDOW_MS - PROMPT_PAIR_WINDOW_MS
+        ? this.prompts.record(event)
+        : undefined;
+    const changed = this.applyToSession(event, prompt);
+    this.applyDecision(event);
+    const context = this.contextForUsage(event);
+    const result = this.accounting.consume(event, context);
+    if (result.usage) {
+      this.applyUsage(result.usage, event);
+      this.emit('usage', result.usage);
+    }
+    if (result.cumulative && !result.usage) {
+      this.emit('cumulative', result.cumulative);
+    }
+    if (result.completion) {
+      const { previous, current } = result.completion;
+      const added = {
+        ...current,
+        dUsd: current.dUsd !== previous.dUsd ? (current.dUsd ?? 0) - (previous.dUsd ?? 0) : null,
+        dTokensIn: previous.dTokensIn === null ? current.dTokensIn : null,
+        dTokensOut: previous.dTokensOut === null ? current.dTokensOut : null,
+      };
+      const knownCostChange = Number(current.dUsd !== null) - Number(previous.dUsd !== null);
+      this.applyUsage(added, { ...event, ts: current.ts }, false, knownCostChange);
+      if (knownCostChange !== 0 && startOfLocalDay(current.ts) === this.dayStart) {
+        this.unknownUsageCount = Math.max(0, this.unknownUsageCount - knownCostChange);
+        const provider = this.providerTotals[event.provider];
+        provider.unknownUsageCount = Math.max(0, provider.unknownUsageCount - knownCostChange);
+      }
+    }
+    if (result.aliases) {
+      this.emit('usage_aliases', result.aliases);
+    }
+    this.emit('event', event);
+    if (changed || result.usage || result.completion) {
+      this.emit('sessions', this.getSessions(), this.getAggregate());
+    }
+  }
+
+  ingestMany(events: AgentEvent[]): void {
+    for (const event of events) {
+      this.ingest(event);
+    }
+  }
+
+  private normalizeSession(input: AgentEvent): AgentEvent {
+    const event = { ...input };
+    if (event.sessionId) {
+      // rawSessionId marks an already normalized internal event. External raw
+      // IDs remain opaque, even if one happens to begin with "codex:".
+      event.rawSessionId = event.rawSessionId ?? event.sessionId;
+      event.sessionId = `${event.provider}:${event.rawSessionId}`;
+    }
+    if (event.parentSessionId) {
+      event.rawParentSessionId ??= event.parentSessionId;
+      event.parentSessionId = `${event.provider}:${event.rawParentSessionId}`;
+      if (event.parentSessionId === event.sessionId) event.parentSessionId = undefined;
+    }
+    return event;
+  }
+
+  private resolveIdentity(event: AgentEvent): void {
     if (event.userEmail) {
       event.agent = config.anonymize ? agentLabel(event.userEmail) : event.userEmail;
-      if (event.sessionId) this.agentBySession.set(event.sessionId, event.agent);
-      if (config.anonymize) event.userEmail = undefined;
+      if (event.sessionId) {
+        this.agentBySession.set(event.sessionId, event.agent);
+      }
+      if (config.anonymize) {
+        event.userEmail = undefined;
+      }
     } else if (event.sessionId) {
       event.agent =
         this.agentBySession.get(event.sessionId) ??
         (config.anonymize ? agentLabel(undefined, event.sessionId) : undefined);
     }
-
-    this.ring.push(event);
-    if (this.ring.length > config.ringSize) this.ring.shift();
-
-    let changed: boolean;
-    if (event.kind === 'metric') {
-      changed = this.applyMetric(event);
-    } else {
-      this.applyToCounters(event);
-      changed = this.applyToSession(event);
-    }
-
-    this.emit('event', event);
-    if (changed) this.emit('sessions', this.getSessions(), this.getAggregate());
   }
 
-  ingestMany(events: AgentEvent[]): void {
-    for (const e of events) this.ingest(e);
-  }
-
-  // ---- counters ----
-
-  private rolloverDayIfNeeded(ts: number): void {
-    const day = startOfLocalDay(ts);
-    if (day !== this.dayStart) {
-      this.dayStart = day;
-      this.costTodayUsd = 0;
-      this.tokensInToday = 0;
-      this.tokensOutToday = 0;
-      this.editWriteAccepts = 0;
-      this.editWriteRejects = 0;
-    }
-  }
-
-  private applyToCounters(e: AgentEvent): void {
-    if (e.kind === 'api_request') {
-      if (e.costUsd) this.costTodayUsd += e.costUsd;
-      if (e.inputTokens) this.tokensInToday += e.inputTokens;
-      if (e.outputTokens) this.tokensOutToday += e.outputTokens;
-    }
-    if (e.kind === 'tool_decision' && (e.toolName === 'Edit' || e.toolName === 'Write')) {
-      if (e.decision === 'accept') this.editWriteAccepts++;
-      else if (e.decision === 'reject') this.editWriteRejects++;
-    }
-  }
-
-  /**
-   * Claude Code emits cost/tokens as cumulative (monotonic) sum metrics, tagged
-   * with session.id. We track the last-seen cumulative per session and add the
-   * *delta* to day counters (correct across midnight + card eviction), while the
-   * session card shows the latest cumulative session total.
-   * Returns true if anything visible changed.
-   */
-  private applyMetric(e: AgentEvent): boolean {
-    const name = e.metricName;
-    const value = e.metricValue;
-    // session.count / active_time.total carry no counter data we accumulate.
-    if (!name || value === undefined || (name !== 'claude_code.cost.usage' && name !== 'claude_code.token.usage')) {
-      // Still enrich an existing session's identity/liveness from the metric.
-      const existing = e.sessionId ? this.sessions.get(e.sessionId) : undefined;
-      if (existing) {
-        existing.lastEventAt = e.ts;
-        if (e.teamId) existing.teamId = e.teamId;
-        if (e.agent) existing.agent = e.agent;
-        return true;
-      }
+  private rolloverDayIfNeeded(): boolean {
+    const day = startOfLocalDay();
+    if (day === this.dayStart) {
       return false;
     }
-    if (!e.sessionId) return false;
-
-    const agg = this.metricAgg.get(e.sessionId) ?? { cost: 0, tokens: {} };
-    let changed = false;
-
-    const sess = this.sessions.get(e.sessionId);
-    if (name === 'claude_code.cost.usage') {
-      const delta = Math.max(0, value - agg.cost);
-      agg.cost = value;
-      this.costTodayUsd += delta;
-      if (delta > 0) {
-        this.emit('usage', {
-          ts: e.ts,
-          sessionId: e.sessionId,
-          agent: e.agent ?? sess?.agent,
-          teamId: e.teamId ?? sess?.teamId,
-          ticket: sess?.ticket,
-          repo: sess?.repo,
-          provider: e.provider,
-          client: e.client ?? sess?.client,
-          dUsd: +delta.toFixed(6),
-          dTokensIn: 0,
-          dTokensOut: 0,
-        });
-      }
-      changed = true;
-    } else {
-      const type = e.tokenType ?? 'other';
-      const prev = agg.tokens[type] ?? 0;
-      const delta = Math.max(0, value - prev);
-      agg.tokens[type] = value;
-      const dOut = type === 'output' ? delta : 0;
-      const dIn = type === 'output' ? 0 : delta; // input / cacheRead / cacheCreation / other
-      this.tokensOutToday += dOut;
-      this.tokensInToday += dIn;
-      if (delta > 0) {
-        this.emit('usage', {
-          ts: e.ts,
-          sessionId: e.sessionId,
-          agent: e.agent ?? sess?.agent,
-          teamId: e.teamId ?? sess?.teamId,
-          ticket: sess?.ticket,
-          provider: e.provider,
-          client: e.client ?? sess?.client,
-          dUsd: 0,
-          dTokensIn: dIn,
-          dTokensOut: dOut,
-        });
-      }
-      changed = true;
-    }
-    this.metricAgg.set(e.sessionId, agg);
-    // Snapshot cumulative so restart deltas stay correct.
-    this.emit('cumulative', { sessionId: e.sessionId, cost: agg.cost, tokens: agg.tokens, ts: e.ts });
-
-    // Reflect cumulative totals on the card, but never resurrect an ended one.
-    const s = this.sessions.get(e.sessionId);
-    if (s) {
-      s.lastEventAt = e.ts;
-      if (e.teamId) s.teamId = e.teamId;
-      if (e.agent) s.agent = e.agent;
-      s.sessionCostUsd = agg.cost;
-      s.sessionTokens = Object.values(agg.tokens).reduce((a, b) => a + b, 0);
-    }
-    return changed;
+    this.dayStart = day;
+    this.costTodayUsd = 0;
+    this.tokensInToday = 0;
+    this.tokensOutToday = 0;
+    this.costKnown = false;
+    this.knownCostCount = 0;
+    this.providerKnownCostCounts = { claude: 0, codex: 0 };
+    this.tokensKnown = false;
+    this.unknownUsageCount = 0;
+    this.editWriteAccepts = 0;
+    this.editWriteRejects = 0;
+    this.providerTotals = {
+      claude: emptyProviderAggregate(),
+      codex: emptyProviderAggregate(),
+    };
+    return true;
   }
 
-  // ---- session derivation ----
+  private applyDecision(event: AgentEvent): void {
+    if (
+      startOfLocalDay(event.ts) !== this.dayStart ||
+      event.kind !== 'tool_decision' ||
+      !['Edit', 'Write', 'File edit'].includes(event.toolName ?? '')
+    ) {
+      return;
+    }
+    if (event.decision === 'accept') {
+      this.editWriteAccepts++;
+      this.providerTotals[event.provider].editWriteAccepts++;
+    } else if (event.decision === 'reject') {
+      this.editWriteRejects++;
+      this.providerTotals[event.provider].editWriteRejects++;
+    }
+  }
 
-  private ensureSession(e: AgentEvent): SessionState | undefined {
-    if (!e.sessionId) return undefined;
-    let s = this.sessions.get(e.sessionId);
-    if (!s) {
-      s = {
-        sessionId: e.sessionId,
-        provider: e.provider,
-        client: e.client,
+  private applyUsageToDay(
+    usage: UsageDelta,
+    countUnknown = true,
+    knownCostChange = Number(usage.dUsd !== null),
+  ): void {
+    // Late exports belong to their event day. They must not reset or inflate
+    // today's live total; persistence still receives the original timestamp.
+    if (startOfLocalDay(usage.ts) !== this.dayStart) {
+      return;
+    }
+    if (usage.dUsd !== null) {
+      this.costTodayUsd += usage.dUsd;
+    } else if (countUnknown && usage.metricName !== 'claude_code.token.usage') {
+      this.unknownUsageCount++;
+    }
+    this.knownCostCount = Math.max(0, this.knownCostCount + knownCostChange);
+    this.costKnown = this.knownCostCount > 0;
+    if (usage.dTokensIn !== null) {
+      this.tokensInToday += usage.dTokensIn;
+      this.tokensKnown = true;
+    }
+    if (usage.dTokensOut !== null) {
+      this.tokensOutToday += usage.dTokensOut;
+      this.tokensKnown = true;
+    }
+    if (usage.provider === 'claude' || usage.provider === 'codex') {
+      const totals = this.providerTotals[usage.provider];
+      if (usage.dUsd !== null) {
+        totals.costTodayUsd += usage.dUsd;
+      } else if (countUnknown && usage.metricName !== 'claude_code.token.usage') {
+        totals.unknownUsageCount++;
+      }
+      this.providerKnownCostCounts[usage.provider] = Math.max(
+        0,
+        this.providerKnownCostCounts[usage.provider] + knownCostChange,
+      );
+      totals.costKnown = this.providerKnownCostCounts[usage.provider] > 0;
+      if (usage.dTokensIn !== null) {
+        totals.tokensTodayInput += usage.dTokensIn;
+        totals.tokensKnown = true;
+      }
+      if (usage.dTokensOut !== null) {
+        totals.tokensTodayOutput += usage.dTokensOut;
+        totals.tokensKnown = true;
+      }
+    }
+  }
+
+  private applyUsage(
+    usage: UsageDelta,
+    event: AgentEvent,
+    countUnknown = true,
+    knownCostChange = Number(usage.dUsd !== null),
+  ): void {
+    this.applyUsageToDay(usage, countUnknown, knownCostChange);
+    if (!usage.sessionId) {
+      return;
+    }
+    const totals = this.sessionTotals.get(usage.sessionId) ?? emptyTotals();
+    if (usage.dUsd !== null) {
+      totals.costUsd += usage.dUsd;
+    }
+    totals.knownCostCount = Math.max(
+      0,
+      (totals.knownCostCount ?? Number(totals.costKnown)) + knownCostChange,
+    );
+    totals.costKnown = totals.knownCostCount > 0;
+    if (usage.dTokensIn !== null) {
+      totals.tokensIn += usage.dTokensIn;
+      totals.tokensKnown = true;
+    }
+    if (usage.dTokensOut !== null) {
+      totals.tokensOut += usage.dTokensOut;
+      totals.tokensKnown = true;
+    }
+    this.sessionTotals.set(usage.sessionId, totals);
+    const session = this.sessionContext.get(usage.sessionId);
+    if (session) {
+      this.refreshSessionTotals(session);
+      if (
+        session.turnStartedAt !== undefined &&
+        event.ts >= session.turnStartedAt &&
+        (event.promptId === undefined || event.promptId === session.currentPromptId)
+      ) {
+        session.turnCostUsd += usage.dUsd ?? 0;
+        session.turnTokens += (usage.dTokensIn ?? 0) + (usage.dTokensOut ?? 0);
+      }
+    }
+  }
+
+  private refreshSessionTotals(session: SessionState): void {
+    const totals = this.sessionTotals.get(session.sessionId) ?? emptyTotals();
+    session.sessionCostUsd = totals.costUsd;
+    session.sessionTokens = totals.tokensIn + totals.tokensOut;
+    session.costKnown = totals.costKnown;
+    session.tokensKnown = totals.tokensKnown;
+  }
+
+  private rememberContext(session: SessionState, ts: number): void {
+    const entries = this.usageContexts.get(session.sessionId) ?? [];
+    const key = JSON.stringify([
+      session.agent,
+      session.teamId,
+      session.repo,
+      session.branch,
+      session.ticket,
+      session.projectId,
+      session.workItemId,
+      session.runId,
+      session.parentRunId,
+      session.model,
+    ]);
+    if (entries.at(-1)?.key !== key) {
+      entries.push({ ts, key, context: { ...session, lastEventAt: ts } });
+      // Keep recent scope changes, not the contents of prompts or tools. Older
+      // delayed usage remains unassigned when its context has been evicted.
+      if (entries.length > 100) {
+        entries.shift();
+      }
+      this.usageContexts.set(session.sessionId, entries);
+    }
+  }
+
+  private contextForUsage(event: AgentEvent): SessionState | undefined {
+    if (!event.sessionId) {
+      return undefined;
+    }
+    const entries = this.usageContexts.get(event.sessionId) ?? [];
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index].ts <= event.ts) {
+        return entries[index].context;
+      }
+    }
+    return undefined;
+  }
+
+  private enrich(session: SessionState, event: AgentEvent): void {
+    if (event.sessionSource) session.sessionSource = event.sessionSource;
+    if (event.parentSessionId) session.parentSessionId = event.parentSessionId;
+    if (event.agentType) session.agentType = event.agentType;
+    if (event.sessionRole && event.sessionRole !== 'unknown') {
+      // A parent-side lifecycle hook may arrive after the child's own events.
+      const rank = { unknown: 0, main: 1, subagent: 2, internal: 3 };
+      if (rank[event.sessionRole] >= rank[session.sessionRole ?? 'unknown'])
+        session.sessionRole = event.sessionRole;
+    }
+    if (!session.sessionRole && event.sessionRole === 'unknown') session.sessionRole = 'unknown';
+    if (event.ts < session.lastEventAt) {
+      return;
+    }
+    if (event.branch && session.branch !== event.branch) {
+      session.ticket = undefined;
+      session.ticketTitle = undefined;
+      session.workItemId = undefined;
+    }
+    if (event.client) {
+      session.client = event.client;
+    }
+    if (event.model) {
+      session.model = event.model;
+    }
+    if (event.teamId) {
+      session.teamId = event.teamId;
+    }
+    if (event.department) {
+      session.department = event.department;
+    }
+    if (event.userEmail) {
+      session.userEmail = event.userEmail;
+    }
+    if (event.agent) {
+      session.agent = event.agent;
+    }
+    if (event.repo) {
+      session.repo = event.repo;
+    }
+    if (event.branch) {
+      session.branch = event.branch;
+    }
+    if (event.ticket) {
+      session.ticket = event.ticket;
+    }
+    if (event.ticketTitle) {
+      session.ticketTitle = event.ticketTitle;
+    }
+    if (event.cwd) {
+      session.cwd = event.cwd;
+    }
+    if (event.projectId) {
+      session.projectId = event.projectId;
+    }
+    if (event.workItemId) {
+      session.workItemId = event.workItemId;
+    }
+    if (event.runId) {
+      session.runId = event.runId;
+    }
+    if (event.parentRunId) {
+      session.parentRunId = event.parentRunId;
+    }
+  }
+
+  private ensureSession(event: AgentEvent): SessionState | undefined {
+    if (!event.sessionId) {
+      return undefined;
+    }
+    let session = this.sessions.get(event.sessionId);
+    const explicitStart =
+      event.kind === 'user_prompt' ||
+      (event.kind === 'activity' &&
+        ['session_start', 'prompt_submit'].includes(event.subtype ?? ''));
+    if (
+      !session &&
+      (event.kind === 'metric' || (this.endedSessions.has(event.sessionId) && !explicitStart))
+    ) {
+      return undefined;
+    }
+    if (!session) {
+      session = {
+        sessionId: event.sessionId,
+        rawSessionId: event.rawSessionId,
+        provider: event.provider,
+        client: event.client,
         status: 'idle',
         turnTokens: 0,
         turnCostUsd: 0,
         sessionTokens: 0,
         sessionCostUsd: 0,
+        costKnown: false,
+        tokensKnown: false,
         promptCount: 0,
-        lastEventAt: e.ts,
-        startedAt: e.ts,
+        lastEventAt: event.ts,
+        startedAt: event.ts,
       };
-      this.sessions.set(e.sessionId, s);
+      this.refreshSessionTotals(session);
+      this.sessions.set(event.sessionId, session);
+      this.sessionContext.set(event.sessionId, session);
+      this.endedSessions.delete(event.sessionId);
     }
-    // Enrich identity/context whenever present (last non-empty wins).
-    s.provider = e.provider;
-    if (e.client) s.client = e.client;
-    if (e.teamId) s.teamId = e.teamId;
-    if (e.department) s.department = e.department;
-    if (e.userEmail) s.userEmail = e.userEmail;
-    if (e.agent) s.agent = e.agent;
-    if (e.repo) s.repo = e.repo;
-    if (e.branch) s.branch = e.branch;
-    if (e.ticket) s.ticket = e.ticket;
-    if (e.ticketTitle) s.ticketTitle = e.ticketTitle;
-    if (e.cwd) s.cwd = e.cwd;
-    return s;
+    this.enrich(session, event);
+    if (event.ts >= session.lastEventAt) {
+      this.rememberContext(session, event.ts);
+    }
+    return session;
   }
 
-  private setStatus(s: SessionState, status: SessionStatus, tool?: string): void {
-    s.status = status;
-    s.currentTool = status === 'tool' ? tool : undefined;
+  private setStatus(session: SessionState, status: SessionStatus, tool?: string): void {
+    session.status = status;
+    session.currentTool = status === 'tool' ? tool : undefined;
   }
 
-  private startTurn(s: SessionState, ts: number, promptId?: string): void {
-    s.status = 'thinking';
-    s.currentTool = undefined;
-    s.turnStartedAt = ts;
-    s.turnTokens = 0;
-    s.turnCostUsd = 0;
-    s.promptCount++;
-    if (promptId) s.currentPromptId = promptId;
+  private startTurn(session: SessionState, ts: number, promptId?: string): void {
+    this.stoppedTurns.delete(session.sessionId);
+    session.status = 'thinking';
+    session.currentTool = undefined;
+    session.turnStartedAt = ts;
+    session.turnTokens = 0;
+    session.turnCostUsd = 0;
+    session.currentPromptId = promptId;
   }
 
-  /** Returns true if derived session state changed (so we should broadcast). */
-  private applyToSession(e: AgentEvent): boolean {
-    const s = this.ensureSession(e);
-    if (!s) return false;
-    s.lastEventAt = e.ts;
-
-    switch (e.kind) {
-      case 'user_prompt': // OTel — authoritative turn boundary (has prompt.id)
-        this.startTurn(s, e.ts, e.promptId);
-        return true;
-
-      case 'api_request': {
-        const tok = (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
-        s.turnTokens += tok;
-        s.sessionTokens += tok;
-        if (e.costUsd) {
-          s.turnCostUsd += e.costUsd;
-          s.sessionCostUsd += e.costUsd;
-        }
-        if (s.status === 'idle') s.status = 'thinking';
-        return true;
+  private applyToSession(event: AgentEvent, prompt?: PromptMatch): boolean {
+    // A delayed duplicate must not reopen a session closed by its lifecycle hook.
+    if (prompt && !prompt.isNew && !this.sessions.has(event.sessionId ?? '')) {
+      return false;
+    }
+    const session = this.ensureSession(event);
+    if (!session) {
+      return false;
+    }
+    if (prompt) {
+      if (prompt.isNew) {
+        session.promptCount++;
       }
-
-      case 'tool_result':
-        // Tool finished; if not already flipped by a PostToolUse hook, reflect it.
-        if (s.status === 'tool') this.setStatus(s, 'thinking');
+      if (prompt.isNew && event.ts >= session.lastEventAt) {
+        this.startTurn(session, prompt.prompt.ts, prompt.prompt.promptId);
+      } else if (session.turnStartedAt === prompt.prompt.ts) {
+        session.currentPromptId ??= prompt.prompt.promptId;
+      }
+      session.lastEventAt = Math.max(session.lastEventAt, event.ts);
+      return true;
+    }
+    if (event.ts < session.lastEventAt) {
+      return false;
+    }
+    session.lastEventAt = event.ts;
+    switch (event.kind) {
+      case 'user_prompt':
         return true;
-
+      case 'api_request':
+        // Delayed usage exports must not revive a turn completed by a Stop hook.
+        return true;
+      case 'tool_result':
+        if (!session.endedAt && !this.stoppedTurns.has(session.sessionId)) {
+          this.setStatus(session, 'thinking');
+        }
+        return true;
       case 'activity':
-        return this.applyActivity(s, e);
-
+        return this.applyActivity(session, event);
       case 'api_error':
       case 'tool_decision':
       case 'mcp_connection':
       case 'metric':
-        return true; // counters/timeline only; keep card fresh via lastEventAt
+        return true;
     }
   }
 
-  private applyActivity(s: SessionState, e: AgentEvent): boolean {
-    switch (e.subtype) {
+  private applyActivity(session: SessionState, event: AgentEvent): boolean {
+    switch (event.subtype) {
+      case 'subagent_start':
+        this.stoppedTurns.delete(session.sessionId);
+        session.endedAt = undefined;
+        session.turnStartedAt = event.ts;
+        this.setStatus(session, 'thinking');
+        return true;
+      case 'subagent_stop':
+        this.stoppedTurns.add(session.sessionId);
+        session.endedAt = event.ts;
+        session.turnStartedAt = undefined;
+        this.setStatus(session, 'idle');
+        return true;
       case 'session_start':
-        s.status = 'idle';
+        this.setStatus(session, 'idle');
         return true;
       case 'prompt_submit':
-        // Hooks lack prompt.id; only (re)start a turn if one isn't running.
-        if (s.status === 'idle' || s.turnStartedAt === undefined) {
-          this.startTurn(s, e.ts);
-        } else {
-          s.status = 'thinking';
-          s.currentTool = undefined;
-        }
         return true;
       case 'pre_tool':
-        this.setStatus(s, 'tool', e.toolName);
+        if (!session.endedAt) {
+          this.stoppedTurns.delete(session.sessionId);
+          this.setStatus(session, 'tool', event.toolName);
+        }
         return true;
       case 'post_tool':
-        this.setStatus(s, 'thinking');
+        if (!session.endedAt && !this.stoppedTurns.has(session.sessionId)) {
+          this.setStatus(session, 'thinking');
+        }
         return true;
       case 'stop':
-        s.status = 'idle';
-        s.currentTool = undefined;
-        s.turnStartedAt = undefined;
+        this.stoppedTurns.add(session.sessionId);
+        this.setStatus(session, 'idle');
+        session.turnStartedAt = undefined;
         return true;
       case 'session_end':
-        this.sessions.delete(s.sessionId);
+        this.sessions.delete(session.sessionId);
+        this.endedSessions.add(session.sessionId);
         return true;
       default:
         return true;
     }
   }
 
+  private retentionCutoff(now = Date.now()): number {
+    return now - config.retentionDays * 86_400_000;
+  }
+
+  private pruneRetainedState(now: number): void {
+    if (now < this.nextPruneAt) {
+      return;
+    }
+    this.nextPruneAt = now + 60_000;
+    const cutoff = this.retentionCutoff(now);
+    this.accounting.prune(cutoff);
+    for (const [id, ts] of this.externalUsageIds) {
+      if (ts < cutoff) {
+        this.externalUsageIds.delete(id);
+      }
+    }
+    for (const [id, ts] of this.sessionLastSeen) {
+      if (ts >= cutoff) {
+        continue;
+      }
+      this.sessionLastSeen.delete(id);
+      this.sessionContext.delete(id);
+      this.usageContexts.delete(id);
+      this.sessionTotals.delete(id);
+      this.endedSessions.delete(id);
+      this.stoppedTurns.delete(id);
+      this.agentBySession.delete(id);
+    }
+  }
+
   private sweep(): void {
     const now = Date.now();
-    let changed = false;
-    for (const [id, s] of this.sessions) {
-      if (now - s.lastEventAt > config.sessionTtlMs) {
+    this.pruneRetainedState(now);
+    let changed = this.rolloverDayIfNeeded();
+    // Every ancestor is needed to preserve a live descendant's path to its root.
+    // Walk explicit links, including unlinked families, and guard malformed cycles.
+    const familyActivity = new Map<string, number>();
+    for (const session of this.sessions.values()) {
+      const visited = new Set<string>();
+      let ancestor: SessionState | undefined = session;
+      while (
+        ancestor &&
+        ancestor.provider === session.provider &&
+        !visited.has(ancestor.sessionId)
+      ) {
+        visited.add(ancestor.sessionId);
+        familyActivity.set(
+          ancestor.sessionId,
+          Math.max(familyActivity.get(ancestor.sessionId) ?? 0, session.lastEventAt),
+        );
+        ancestor = ancestor.parentSessionId
+          ? this.sessions.get(ancestor.parentSessionId)
+          : undefined;
+      }
+    }
+    for (const [id, session] of this.sessions) {
+      if (now - (familyActivity.get(id) ?? session.lastEventAt) > config.sessionTtlMs) {
         this.sessions.delete(id);
-        this.agentBySession.delete(id);
-        this.metricAgg.delete(id);
+        // Keep baselines and attribution after card eviction for late exports.
         changed = true;
         continue;
       }
-      // Fallback idle detection (when Stop hook not installed).
-      if (s.status !== 'idle' && s.status !== 'tool' && now - s.lastEventAt > config.idleMs) {
-        s.status = 'idle';
-        s.currentTool = undefined;
+      if (
+        session.status !== 'idle' &&
+        session.status !== 'tool' &&
+        now - session.lastEventAt > config.idleMs
+      ) {
+        this.setStatus(session, 'idle');
         changed = true;
       }
     }
-    if (changed) this.emit('sessions', this.getSessions(), this.getAggregate());
+    if (changed) {
+      this.emit('sessions', this.getSessions(), this.getAggregate());
+    }
   }
 
-  // ---- reads ----
-
   getSessions(): SessionState[] {
-    return [...this.sessions.values()].sort((a, b) => b.lastEventAt - a.lastEventAt);
+    return [...this.sessions.values()].sort((left, right) => right.lastEventAt - left.lastEventAt);
   }
 
   getRecentEvents(limit = 100): AgentEvent[] {
     return this.ring.slice(-limit);
   }
 
-  /** Events for one prompt turn (detail drawer timeline). */
   getPromptEvents(promptId: string): AgentEvent[] {
-    return this.ring.filter((e) => e.promptId === promptId);
+    return this.ring.filter((event) => event.promptId === promptId);
   }
 
-  getAggregate(): Aggregate {
-    const now = Date.now();
-    const hourAgo = now - 3_600_000;
-    // Count prompts from whichever source is active: the OTel user_prompt log
-    // OR the prompt_submit hook. In practice only one fires per prompt for a
-    // given deployment (real Claude Code emits the hook, not the log), so this
-    // does not double-count.
-    const promptsLastHour = this.ring.filter(
-      (e) =>
-        e.ts >= hourAgo &&
-        (e.kind === 'user_prompt' || (e.kind === 'activity' && e.subtype === 'prompt_submit')),
-    ).length;
-    const activeSessions = this.getSessions().filter((s) => s.status !== 'idle').length;
-    const recentErrors = this.ring
-      .filter((e) => e.kind === 'api_error')
-      .slice(-8)
-      .map((e) => ({ ts: e.ts, statusCode: e.statusCode, model: e.model, teamId: e.teamId }));
+  getProviderAggregates(): ProviderAggregates {
+    return { claude: this.getAggregate('claude'), codex: this.getAggregate('codex') };
+  }
 
+  getAggregate(provider?: AgentProvider): Aggregate {
+    this.rolloverDayIfNeeded();
+    const hourAgo = Date.now() - PROMPT_WINDOW_MS;
+    this.prompts.prune(hourAgo - PROMPT_PAIR_WINDOW_MS);
+    const events = provider ? this.ring.filter((event) => event.provider === provider) : this.ring;
+    const promptsLastHour = this.prompts.count(hourAgo, provider);
+    const activeSessions = groupSessions(
+      this.getSessions().filter((session) => !provider || session.provider === provider),
+    ).groups.filter((group) => group.active).length;
+    const recentErrors = events
+      .filter((event) => event.kind === 'api_error')
+      .slice(-8)
+      .map((event) => ({
+        ts: event.ts,
+        statusCode: event.statusCode,
+        model: event.model,
+        teamId: event.teamId,
+      }));
+    if (provider) {
+      return { ...this.providerTotals[provider], activeSessions, promptsLastHour, recentErrors };
+    }
     return {
       activeSessions,
       promptsLastHour,
       costTodayUsd: this.costTodayUsd,
       tokensTodayInput: this.tokensInToday,
       tokensTodayOutput: this.tokensOutToday,
+      costKnown: this.costKnown,
+      tokensKnown: this.tokensKnown,
+      unknownUsageCount: this.unknownUsageCount,
       editWriteAccepts: this.editWriteAccepts,
       editWriteRejects: this.editWriteRejects,
       recentErrors,

@@ -30,7 +30,7 @@ Changing the bootstrap password after the user already exists does not rotate th
 user's password; rotate it through Cognee's user administration before updating Brain.
 
 If port 8000 is occupied, change both the port and the URL, for example to 8001.
-The current development machine uses 8001. Start from the repository root:
+Start from the repository root:
 
 ```bash
 docker compose -f compose.cognee.yaml up -d cognee
@@ -128,9 +128,6 @@ exact text preservation, idempotent reuse, explicit scope, authentication renewa
 and graph provenance. Those tests do not spend provider credits. Real indexing,
 isolation, and post-restart retrieval must additionally be checked against the running
 container and approved source corpus; unit tests alone do not prove those properties.
-
-Historical pilot measurements are recorded once in the
-[architecture decision record](BRAIN-NOTION-COGNEE-PLAN.md#historical-pilot-verification--16-september-2026).
 
 References: [pinned API source](https://github.com/topoteretes/cognee/tree/v1.5.4/cognee/api/v1),
 [dataset isolation implementation](https://github.com/topoteretes/cognee/blob/v1.5.4/cognee/modules/search/methods/search.py),

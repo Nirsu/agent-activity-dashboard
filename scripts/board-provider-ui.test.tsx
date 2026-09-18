@@ -1,0 +1,287 @@
+import React from 'react';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { resolve } from 'node:path';
+import { createServer } from 'vite';
+import { act, create } from 'react-test-renderer';
+import type { Aggregate, SessionState } from '../ui/src/types';
+
+test('Board filters sessions, summaries and live updates by AI provider', async (t) => {
+  let renderer!: ReturnType<typeof create>;
+  let vite: Awaited<ReturnType<typeof createServer>> | undefined;
+  const restoreGlobals: Array<() => void> = [];
+  t.after(async () => {
+    if (renderer) {
+      await act(async () => renderer.unmount());
+    }
+    await vite?.close();
+    for (const restore of restoreGlobals) {
+      restore();
+    }
+  });
+  class TestSocket {
+    static latest: TestSocket;
+    onmessage?: (message: { data: string }) => void;
+    constructor() {
+      TestSocket.latest = this;
+    }
+    close() {}
+  }
+  const replacements = {
+    location: new URL('http://localhost/#board'),
+    localStorage: { getItem: () => null },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    WebSocket: TestSocket,
+    fetch: async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes('/api/trends') ? { enabled: true, days: [], byStream: [] } : { runs: [] },
+        ),
+      ),
+  };
+  for (const [name, value] of Object.entries(replacements)) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    restoreGlobals.push(() => {
+      if (original) {
+        Object.defineProperty(globalThis, name, original);
+      } else {
+        Reflect.deleteProperty(globalThis, name);
+      }
+    });
+  }
+  vite = await createServer({
+    root: resolve('ui'),
+    configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true, watch: null, hmr: false },
+    appType: 'custom',
+    logLevel: 'error',
+  });
+  const { default: App } = await vite.ssrLoadModule('/src/App.tsx');
+  const { SessionCard } = await vite.ssrLoadModule('/src/components/SessionCard.tsx');
+  const { AggregateBar } = await vite.ssrLoadModule('/src/components/AggregateBar.tsx');
+  const { Directory } = await vite.ssrLoadModule('/src/components/Directory.tsx');
+  const { SessionDetail } = await vite.ssrLoadModule('/src/components/SessionDetail.tsx');
+
+  const session = (provider: SessionState['provider']): SessionState => ({
+    sessionId: `${provider}:session`,
+    provider,
+    teamId: `${provider}-stream`,
+    agent: `${provider}-agent`,
+    status: 'thinking',
+    turnTokens: 0,
+    turnCostUsd: 0,
+    sessionTokens: 0,
+    sessionCostUsd: 0,
+    costKnown: false,
+    tokensKnown: false,
+    promptCount: 1,
+    startedAt: Date.now(),
+    lastEventAt: Date.now(),
+  });
+  const aggregate = (costTodayUsd: number): Aggregate => ({
+    activeSessions: 1,
+    promptsLastHour: 1,
+    costTodayUsd,
+    costKnown: true,
+    tokensKnown: false,
+    tokensTodayInput: 0,
+    tokensTodayOutput: 0,
+    unknownUsageCount: 0,
+    editWriteAccepts: 0,
+    editWriteRejects: 0,
+    recentErrors: [],
+  });
+  const claude = session('claude');
+  const codex = session('codex');
+  const summary = { claude: aggregate(2), codex: aggregate(5) };
+  await act(async () => {
+    renderer = create(<App />);
+  });
+  const publish = async (
+    type: 'snapshot' | 'sessions',
+    sessions: SessionState[],
+    withSummary = true,
+  ) => {
+    await act(async () =>
+      TestSocket.latest.onmessage?.({
+        data: JSON.stringify({
+          type,
+          sessions,
+          aggregate: aggregate(7),
+          providerAggregates: withSummary ? summary : undefined,
+          recentEvents: [],
+        }),
+      }),
+    );
+  };
+  const cards = () => renderer.root.findAllByType(SessionCard);
+  const cardProviders = () => cards().map((card) => card.props.s.provider);
+  const providerButton = (label: string) =>
+    renderer.root
+      .findByProps({ 'aria-label': 'Filter by AI provider' })
+      .findAllByType('button')
+      .find((button) => button.props.children === label)!;
+  const click = async (label: string) => {
+    await act(async () => providerButton(label).props.onClick());
+    assert.equal(providerButton(label).props['aria-pressed'], true);
+    assert.equal(
+      ['All AI', 'Claude', 'Codex'].filter((name) => providerButton(name).props['aria-pressed'])
+        .length,
+      1,
+    );
+  };
+  const cost = () => renderer.root.findByType(AggregateBar).props.agg?.costTodayUsd;
+
+  await publish('snapshot', [claude, codex]);
+  assert.deepEqual(cardProviders(), ['claude', 'codex']);
+  assert.equal(cost(), 7);
+  await click('Claude');
+  assert.deepEqual(cardProviders(), ['claude']);
+  assert.equal(cost(), 2);
+  assert.deepEqual(renderer.root.findByType(Directory).props.sessions, [claude]);
+
+  await act(async () =>
+    renderer.root
+      .findByType(Directory)
+      .props.onSelect({ stream: claude.teamId, agent: claude.agent }),
+  );
+  await act(async () => cards()[0].props.onClick());
+  assert.equal(renderer.root.findAllByType(SessionDetail).length, 1);
+  await click('Codex');
+  assert.deepEqual(
+    cardProviders(),
+    ['codex'],
+    'changing AI clears an incompatible directory selection',
+  );
+  assert.equal(cost(), 5);
+  assert.equal(renderer.root.findAllByType(SessionDetail).length, 0);
+  assert.deepEqual(renderer.root.findByType(Directory).props.selection, {
+    stream: null,
+    agent: null,
+  });
+
+  summary.codex = aggregate(6);
+  await publish('sessions', [claude, codex, { ...codex, sessionId: 'codex:new' }]);
+  assert.deepEqual(cardProviders(), ['codex', 'codex']);
+  assert.equal(cost(), 6);
+  await click('All AI');
+  assert.equal(cards().length, 3);
+  assert.equal(cost(), 7);
+
+  await click('Codex');
+  await publish('sessions', [claude]);
+  assert.equal(cards().length, 0);
+  assert.equal(cost(), 6, 'daily cost survives session removal');
+  assert.equal(
+    renderer.root.findByProps({ className: 'empty-title' }).props.children,
+    'No matching sessions',
+  );
+  const clear = renderer.root
+    .findAllByType('button')
+    .find((button) => button.props.children === 'Clear filters')!;
+  await act(async () => clear.props.onClick());
+  assert.deepEqual(cardProviders(), ['claude']);
+  assert.equal(providerButton('All AI').props['aria-pressed'], true);
+
+  await publish('snapshot', [claude], false);
+  await click('Claude');
+  assert.equal(
+    cost(),
+    undefined,
+    'an older server must not display global totals for a selected AI',
+  );
+
+  await click('All AI');
+  const root = { ...codex, sessionRole: 'main' as const, status: 'idle' as const };
+  const child = {
+    ...codex,
+    sessionId: 'codex:child',
+    sessionRole: 'subagent' as const,
+    parentSessionId: root.sessionId,
+    teamId: 'different-child-stream',
+    agent: 'child-agent',
+  };
+  const check = {
+    ...child,
+    sessionId: 'codex:check',
+    parentSessionId: child.sessionId,
+    sessionRole: 'internal' as const,
+    agentType: 'Approval check',
+  };
+  const unknown = {
+    ...codex,
+    sessionId: 'codex:unknown',
+    sessionRole: 'unknown' as const,
+    promptCount: 0,
+  };
+  const inactive = { ...claude, status: 'idle' as const };
+  await publish('sessions', [unknown, check, child, root, inactive]);
+  assert.equal(cards().length, 1, 'only the active main task gets a prominent card');
+  assert.equal(cards()[0].props.s.sessionId, root.sessionId);
+  assert.equal(cards()[0].props.group.children.length, 2);
+  assert.equal(renderer.root.findByType(AggregateBar).props.agg.activeSessions, 1);
+  assert.equal(
+    renderer.root.findAllByType('details').length,
+    2,
+    'inactive and unlinked work is collapsed',
+  );
+  assert.ok(renderer.root.findAllByType('details').every((item) => !item.props.open));
+  await act(async () =>
+    renderer.root.findByType(Directory).props.onSelect({ stream: root.teamId, agent: root.agent }),
+  );
+  await act(async () => cards()[0].props.onClick());
+  let detail = renderer.root.findByType(SessionDetail);
+  assert.equal(
+    detail.props.group.children.length,
+    2,
+    'directory selection retains children with different attribution',
+  );
+  await act(async () => detail.props.onSelect(child.sessionId));
+  detail = renderer.root.findByType(SessionDetail);
+  assert.equal(detail.props.session.sessionId, child.sessionId);
+  assert.equal(detail.props.group.root.sessionId, root.sessionId);
+  assert.ok(
+    detail
+      .findAllByType('button')
+      .some((button) => button.props.children === '← Back to main task'),
+  );
+  await publish('sessions', [
+    unknown,
+    { ...check, status: 'idle' },
+    { ...child, status: 'idle' },
+    root,
+    inactive,
+  ]);
+  assert.equal(
+    cards().length,
+    0,
+    'finished delegated work moves the main task into the inactive list',
+  );
+  assert.equal(
+    renderer.root.findByType(AggregateBar).props.agg.activeSessions,
+    0,
+    'unclassified activity never inflates main task count',
+  );
+
+  await click('Codex');
+  const navigate = async (label: string) => {
+    const button = renderer.root
+      .findByProps({ className: 'viewswitch' })
+      .findAllByType('button')
+      .find((entry) => entry.props.children === label)!;
+    await act(async () => button.props.onClick());
+  };
+  await navigate('Trends');
+  assert.equal(renderer.root.findAllByProps({ 'aria-label': 'Filter by AI provider' }).length, 0);
+  assert.equal(renderer.root.findAllByType(Directory).length, 0);
+  assert.equal(renderer.root.findAllByType(SessionDetail).length, 0);
+  assert.equal(cost(), 7, 'global history must not show a provider-filtered KPI');
+  assert.equal(renderer.root.findByType(AggregateBar).props.provider, undefined);
+  assert.match(JSON.stringify(renderer.toJSON()), /all providers and streams/);
+  await navigate('Board');
+  assert.equal(providerButton('Codex').props['aria-pressed'], true);
+  assert.equal(cost(), 6, 'returning to the board restores its provider selection');
+});

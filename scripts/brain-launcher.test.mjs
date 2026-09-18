@@ -32,6 +32,8 @@ test(
       silent: true,
       env: {
         ...process.env,
+        DATABASE_URL: '',
+        BRAIN_SYNC_ENABLED: '0',
         PORT: String(apiPort),
         BRAIN_UI_PORT: String(uiPort),
         DATA_DIR: directory,

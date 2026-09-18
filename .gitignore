@@ -1,19 +1,18 @@
 node_modules/
 dist/
 .env
+.env.postgres.local
 brain.projects.json
 *.log
 .DS_Store
 *.tsbuildinfo
 .playwright-cli/
 
-# analytics: local config, frozen datasets, ledger, time log (data, not code)
+# Preserve ignored local data from the retired delivery tools.
 analytics/baseline/config.json
 analytics/baseline/out/*
-!analytics/baseline/out/.gitkeep
 analytics/timelog/timelog.csv
-# Runtime data dir: SQLite history, cost ledger, and the delivery module's
-# encrypted GitHub/Jira credentials (server/data/delivery/secrets.json).
+# Runtime data dir: SQLite history, cost ledger, and encrypted credentials.
 # Ignore the whole directory - never enumerate extensions here, or a new
 # runtime file silently becomes committable.
 server/data/

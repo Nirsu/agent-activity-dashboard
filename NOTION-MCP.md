@@ -25,10 +25,6 @@ configure this server connection.
    before starting an analysis. Cognee indexing and later analysis can make paid
    provider calls; testing the Notion connection itself makes no model call.
 
-The initial connection test page is
-[Test Harmonie Brain](https://app.notion.com/p/harmonie-mutuelle/Test-Harmonie-Brain-3dddeff1b90780b7baedffb10c08a0d3).
-It is not automatically promoted to a dashboard specification.
-
 ## Persistence and access
 
 - Registration, OAuth tokens, token rotation, and pending PKCE authorization are

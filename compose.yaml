@@ -12,7 +12,7 @@ services:
       RETENTION_DAYS: ${RETENTION_DAYS:-60}
       SESSION_TTL_MS: ${SESSION_TTL_MS:-1800000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?set CREDENTIAL_ENCRYPTION_KEY in .env}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
     restart: unless-stopped
     volumes:
       - aad-data:/app/server/data

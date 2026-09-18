@@ -1,29 +1,30 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import type Database from 'better-sqlite3';
 import type { Source } from '../sources.js';
+import { BrainStorage } from '../persistence.js';
 import type { SourceRegistration, SyncJob } from './types.js';
 
 export class MemoryStore {
-  private db!: Database.Database;
+  private readonly storage: BrainStorage;
+  private events = Promise.resolve();
 
-  constructor(readonly path: string) {}
+  constructor(readonly path: string) {
+    this.storage = new BrainStorage(
+      path,
+      [
+        'brain_memory_sources',
+        'brain_memory_captures',
+        'brain_memory_jobs',
+        'brain_webhook_events',
+        'brain_memory_datasets',
+      ],
+      2,
+    );
+  }
 
   async init() {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const { default: Sqlite } = await import('better-sqlite3');
-    this.db = new Sqlite(this.path);
-    this.db.pragma('journal_mode = WAL');
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS brain_memory_sources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brain_memory_captures (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brain_memory_jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brain_webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brain_memory_datasets (capture_id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL);
-    `);
+    await this.storage.init();
     for (const job of this.jobs()) {
       if (job.status === 'running') {
-        this.saveJob({
+        await this.saveJob({
           ...job,
           status: 'queued',
           error: 'Resuming synchronization after restart.',
@@ -32,97 +33,71 @@ export class MemoryStore {
     }
   }
 
-  private records<T>(table: string): T[] {
-    const rows = this.db.prepare(`SELECT data FROM ${table} ORDER BY rowid DESC`).all() as {
-      data: string;
-    }[];
-    return rows.map((row) => JSON.parse(row.data));
-  }
-
   sources() {
-    return this.records<SourceRegistration>('brain_memory_sources');
+    return this.storage
+      .entries<SourceRegistration>('brain_memory_sources')
+      .map((entry) => entry.data);
   }
   jobs() {
-    return this.records<SyncJob>('brain_memory_jobs');
+    return this.storage.entries<SyncJob>('brain_memory_jobs').map((entry) => entry.data);
   }
-
   source(id: string) {
-    const row = this.db.prepare('SELECT data FROM brain_memory_sources WHERE id=?').get(id) as
-      { data: string } | undefined;
-    return row ? (JSON.parse(row.data) as SourceRegistration) : undefined;
+    return this.storage.get<SourceRegistration>('brain_memory_sources', id);
   }
-
   capture(id: string): Source | undefined {
-    const row = this.db.prepare('SELECT data FROM brain_memory_captures WHERE id=?').get(id) as
-      { data: string } | undefined;
-    if (row) {
-      return JSON.parse(row.data);
-    }
-    // Keep exact historical demo captures readable after retiring its workflow.
-    const legacy = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='brain_records'")
-      .get();
-    if (legacy) {
-      const old = this.db
-        .prepare("SELECT data FROM brain_records WHERE kind='source' AND id=?")
-        .get(id) as { data: string } | undefined;
-      if (old) {
-        return JSON.parse(old.data);
-      }
-    }
-    return undefined;
+    return (
+      this.storage.get<Source>('brain_memory_captures', id) ??
+      this.storage.legacyCapture<Source>(id)
+    );
   }
-
   saveSource(source: SourceRegistration) {
-    this.db
-      .prepare(
-        'INSERT INTO brain_memory_sources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
-      )
-      .run(source.id, JSON.stringify(source));
+    return this.storage.put('brain_memory_sources', source.id, source);
   }
-
   saveCapture(source: Source) {
-    this.db
-      .prepare('INSERT OR IGNORE INTO brain_memory_captures VALUES (?,?)')
-      .run(source.id, JSON.stringify(source));
+    return this.storage.put('brain_memory_captures', source.id, source, true);
   }
-
-  dataset(captureId: string) {
-    const row = this.db
-      .prepare('SELECT dataset_id FROM brain_memory_datasets WHERE capture_id=?')
-      .get(captureId) as { dataset_id: string } | undefined;
-    return row?.dataset_id;
+  dataset(id: string) {
+    return this.storage.get<{ datasetId: string }>('brain_memory_datasets', id)?.datasetId;
   }
-
-  saveDataset(captureId: string, datasetId: string) {
-    this.db
-      .prepare(
-        'INSERT INTO brain_memory_datasets VALUES (?,?) ON CONFLICT(capture_id) DO UPDATE SET dataset_id=excluded.dataset_id',
-      )
-      .run(captureId, datasetId);
+  saveDataset(id: string, datasetId: string) {
+    return this.storage.put('brain_memory_datasets', id, { id, datasetId });
   }
-
   saveJob(job: SyncJob) {
-    this.db
-      .prepare(
-        'INSERT INTO brain_memory_jobs VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
-      )
-      .run(job.id, JSON.stringify(job));
+    return this.storage.put('brain_memory_jobs', job.id, job);
   }
 
-  recordEvent(id: string, enqueue: () => void) {
-    return this.db.transaction(() => {
-      const inserted = this.db
-        .prepare('INSERT OR IGNORE INTO brain_webhook_events VALUES (?,?)')
-        .run(id, new Date().toISOString());
-      if (inserted.changes) {
-        enqueue();
-      }
-      return Boolean(inserted.changes);
-    })();
+  afterCommit(callback: () => void) {
+    this.storage.afterCommit(callback);
+  }
+  transaction<T>(work: () => T | Promise<T>) {
+    return this.storage.transaction(work);
   }
 
-  close() {
-    this.db.close();
+  recordEvent(id: string, enqueue: () => void | Promise<void>) {
+    const operation = this.events.then(() =>
+      this.storage.transaction(async () => {
+        if (this.storage.get('brain_webhook_events', id)) {
+          return false;
+        }
+        await enqueue();
+        await this.storage.put(
+          'brain_webhook_events',
+          id,
+          { id, receivedAt: new Date().toISOString() },
+          true,
+        );
+        return true;
+      }),
+    );
+    this.events = operation.then(
+      () => {},
+      () => {},
+    );
+    return operation;
+  }
+
+  async close() {
+    await this.events;
+    await this.storage.close();
   }
 }

@@ -7,5 +7,7 @@ dist
 server/data
 analytics/baseline/out
 .env
+.env.*
+!.env.example
 *.log
 *.tsbuildinfo

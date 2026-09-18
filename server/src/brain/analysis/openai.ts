@@ -123,6 +123,21 @@ export class OpenAIClient {
     const tokens = {
       inputTokens: tokenCount(usage.input_tokens),
       outputTokens: tokenCount(usage.output_tokens),
+      usageKnown:
+        Number.isSafeInteger(usage.input_tokens) &&
+        Number.isSafeInteger(usage.output_tokens) &&
+        Number(usage.input_tokens) >= 0 &&
+        Number(usage.output_tokens) >= 0,
+      model: typeof payload.model === 'string' ? payload.model : this.options.model,
+      responseId: typeof payload.id === 'string' ? payload.id : undefined,
+      cachedInputTokens:
+        usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
+          ? tokenCount((usage.input_tokens_details as Record<string, unknown>).cached_tokens)
+          : undefined,
+      reasoningTokens:
+        usage.output_tokens_details && typeof usage.output_tokens_details === 'object'
+          ? tokenCount((usage.output_tokens_details as Record<string, unknown>).reasoning_tokens)
+          : undefined,
     };
 
     // Preserve reported consumption even when the answer cannot be used.

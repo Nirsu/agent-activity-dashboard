@@ -12,6 +12,7 @@ export function useProjectAnalyses() {
   const [commit, setCommit] = useState('');
   const [baseCommit, setBaseCommit] = useState('');
   const [feature, setFeature] = useState('');
+  const [ticket, setTicket] = useState('');
   const [pendingAction, setPendingAction] = useState<'analysis' | 'review' | null>(null);
   const [error, setError] = useState('');
   const [connectionError, setConnectionError] = useState('');
@@ -20,6 +21,7 @@ export function useProjectAnalyses() {
   const [document, setDocument] = useState<SourceSelection | null>(null);
   const detailVersion = useRef(0);
   const stateVersion = useRef(0);
+  const linkedRunApplied = useRef('');
 
   async function refresh() {
     const version = ++stateVersion.current;
@@ -63,6 +65,25 @@ export function useProjectAnalyses() {
   const project = state?.projects.find((project) => project.id === projectId);
   const runs = state?.runs.filter((run) => run.projectId === projectId) ?? [];
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? runs[0];
+
+  useEffect(() => {
+    const linkedId = location.hash.split('/')[2];
+    if (!linkedId || linkedRunApplied.current === linkedId) {
+      return;
+    }
+    let decodedId: string;
+    try {
+      decodedId = decodeURIComponent(linkedId);
+    } catch {
+      return;
+    }
+    const linked = state?.runs.find((run) => run.id === decodedId);
+    if (linked) {
+      setProjectId(linked.projectId);
+      setSelectedRunId(linked.id);
+      linkedRunApplied.current = linkedId;
+    }
+  }, [state]);
 
   async function loadDetail(runId: string) {
     const version = ++detailVersion.current;
@@ -110,6 +131,7 @@ export function useProjectAnalyses() {
     setCommit('');
     setBaseCommit('');
     setFeature('');
+    setTicket('');
     setDocument(null);
     setError('');
     setNotice('');
@@ -138,6 +160,7 @@ export function useProjectAnalyses() {
     setCommit(selectedRun.commit ?? '');
     setBaseCommit(selectedRun.baseCommit ?? '');
     setFeature(selectedRun.feature ?? '');
+    setTicket(selectedRun.correlation?.ticket ?? '');
     setError('');
     setNotice('Previous setup restored. Check the settings above, then choose Run AI analysis.');
   }
@@ -161,6 +184,7 @@ export function useProjectAnalyses() {
         ...(commit.trim() ? { commit: commit.trim() } : {}),
         ...(baseCommit.trim() ? { baseCommit: baseCommit.trim() } : {}),
         ...(feature.trim() ? { feature: feature.trim() } : {}),
+        ...(ticket.trim() ? { ticket: ticket.trim(), workItemId: ticket.trim() } : {}),
       });
       ++stateVersion.current;
       setSelectedRunId(run.id);
@@ -219,6 +243,8 @@ export function useProjectAnalyses() {
     setBaseCommit,
     feature,
     setFeature,
+    ticket,
+    setTicket,
     busy,
     savingReview: pendingAction === 'review',
     locked,

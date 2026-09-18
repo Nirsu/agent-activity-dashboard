@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentEvent, Aggregate, ServerMessage, SessionState } from '../types';
+import type {
+  AgentEvent,
+  Aggregate,
+  ProviderAggregates,
+  ServerMessage,
+  SessionState,
+} from '../types';
 
-const configuredServerUrl = (import.meta.env.VITE_SERVER_URL as string | undefined)?.replace(/\/$/, '');
-const SERVER_URL = configuredServerUrl || (import.meta.env.DEV ? 'http://localhost:4318' : location.origin);
+const configuredServerUrl = (import.meta.env.VITE_SERVER_URL as string | undefined)?.replace(
+  /\/$/,
+  '',
+);
+const SERVER_URL =
+  configuredServerUrl || (import.meta.env.DEV ? 'http://localhost:4318' : location.origin);
 
 // Viewer token (for a TLS+auth cloud deploy): pass ?token=… once; it's kept in
 // localStorage thereafter. Empty for open localhost dev.
@@ -55,6 +65,7 @@ export interface DashboardState {
   connected: boolean;
   sessions: SessionState[];
   aggregate: Aggregate | null;
+  providerAggregates: ProviderAggregates | null;
   events: AgentEvent[];
 }
 
@@ -63,6 +74,7 @@ export function useDashboard(): DashboardState {
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<SessionState[]>([]);
   const [aggregate, setAggregate] = useState<Aggregate | null>(null);
+  const [providerAggregates, setProviderAggregates] = useState<ProviderAggregates | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,10 +97,12 @@ export function useDashboard(): DashboardState {
         if (msg.type === 'snapshot') {
           setSessions(msg.sessions);
           setAggregate(msg.aggregate);
+          setProviderAggregates(msg.providerAggregates ?? null);
           setEvents(msg.recentEvents.slice(-MAX_EVENTS));
         } else if (msg.type === 'sessions') {
           setSessions(msg.sessions);
           setAggregate(msg.aggregate);
+          setProviderAggregates(msg.providerAggregates ?? null);
         } else if (msg.type === 'event') {
           setEvents((prev) => [...prev, msg.event].slice(-MAX_EVENTS));
         }
@@ -103,7 +117,7 @@ export function useDashboard(): DashboardState {
     };
   }, []);
 
-  return { connected, sessions, aggregate, events };
+  return { connected, sessions, aggregate, providerAggregates, events };
 }
 
 export { SERVER_URL };

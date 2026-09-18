@@ -3,10 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import { BrainAgents } from './brain/analysis/service.js';
 import { reviewDecisions } from './brain/analysis/validation.js';
 import { requireBrainAdmin } from './brain/access.js';
+import type { BrainCorrelation } from './brain/analysis/types.js';
 
 export { BrainAgents };
 
-type StartAnalysisBody = {
+type StartAnalysisBody = BrainCorrelation & {
   projectId: string;
   commit?: string;
   baseCommit?: string;
@@ -20,11 +21,18 @@ type ReviewAnalysisBody = {
   expectedReviewId?: string;
 };
 
-export async function registerBrainAgents(app: FastifyInstance, service = new BrainAgents()) {
+export async function registerBrainAgents(
+  app: FastifyInstance,
+  service = new BrainAgents(),
+  options: { registerCloseHook?: boolean } = {},
+) {
+  if (options.registerCloseHook !== false) {
+    app.addHook('onClose', () => service.close());
+  }
   await service.init();
-  app.addHook('onClose', () => service.close());
 
   app.get('/api/brain/agents', () => service.state());
+  app.get('/api/brain/activity', () => service.overview());
   app.get<{ Params: { id: string } }>('/api/brain/analyses/:id', (request) =>
     service.detail(request.params.id),
   );
@@ -38,6 +46,26 @@ export async function registerBrainAgents(app: FastifyInstance, service = new Br
           additionalProperties: false,
           required: ['projectId'],
           properties: {
+            workItemId: {
+              type: 'string',
+              minLength: 1,
+              maxLength: brainConfig.analysis.maxCorrelationCharacters,
+            },
+            ticket: {
+              type: 'string',
+              minLength: 1,
+              maxLength: brainConfig.analysis.maxCorrelationCharacters,
+            },
+            originSessionId: {
+              type: 'string',
+              minLength: 1,
+              maxLength: brainConfig.analysis.maxCorrelationCharacters,
+            },
+            parentRunId: {
+              type: 'string',
+              minLength: 1,
+              maxLength: brainConfig.analysis.maxCorrelationCharacters,
+            },
             projectId: { type: 'string', maxLength: brainConfig.projects.maxIdCharacters },
             commit: { type: 'string', pattern: '^[a-fA-F0-9]{40,64}$' },
             baseCommit: { type: 'string', pattern: '^[a-fA-F0-9]{40,64}$' },
@@ -52,7 +80,13 @@ export async function registerBrainAgents(app: FastifyInstance, service = new Br
     },
     async (request, reply) => {
       const { projectId, commit, baseCommit, feature } = request.body;
-      const run = await service.start(projectId, commit, baseCommit, feature);
+      const { workItemId, ticket, originSessionId, parentRunId } = request.body;
+      const run = await service.start(projectId, commit, baseCommit, feature, undefined, {
+        workItemId,
+        ticket,
+        originSessionId,
+        parentRunId,
+      });
       return reply.code(202).send(run);
     },
   );

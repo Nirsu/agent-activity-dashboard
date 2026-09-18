@@ -86,6 +86,54 @@ export type AnalysisRun = {
   requirements: Requirement[];
   findings: Finding[];
   changedFiles: string[];
+  correlation?: BrainCorrelation;
+  calls?: BrainModelCall[];
+};
+
+export type BrainCorrelation = {
+  workItemId?: string;
+  ticket?: string;
+  originSessionId?: string;
+  parentRunId?: string;
+};
+
+export type BrainModelCall = {
+  id: string;
+  role: AgentRole;
+  model: string;
+  responseId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  usageKnown: boolean;
+  costUsd: number | null;
+};
+
+export type BrainActivity = BrainCorrelation & {
+  id: string;
+  ts: number;
+  kind: 'brain_analysis' | 'brain_model_call' | 'brain_review';
+  phase: 'started' | 'progress' | 'completed' | 'failed' | 'interrupted';
+  runId: string;
+  projectId: string;
+  projectName: string;
+  model: string;
+  stage: string;
+  role?: AgentRole;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  usageKnown?: boolean;
+  costUsd?: number | null;
+  startedAt?: string;
+  finishedAt?: string;
+  findingCount?: number;
+  differenceCount?: number;
 };
 
 export type SubmittedFile = { path: string; content: string | null };
@@ -97,6 +145,11 @@ export type ModelResult = {
   inputTokens: number;
   outputTokens: number;
   error?: string;
+  usageKnown?: boolean;
+  model?: string;
+  responseId?: string;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
 };
 
 export type ModelCall = (
@@ -114,4 +167,5 @@ export type BrainAgentsOptions = {
   requestTimeoutMs?: number;
   call?: ModelCall;
   memory?: Pick<MemoryService, 'retrieve' | 'version' | 'contextVersion' | 'recordReview'>;
+  onActivity?: (event: BrainActivity) => Promise<void>;
 };

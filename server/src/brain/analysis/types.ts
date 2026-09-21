@@ -71,6 +71,11 @@ export type AnalysisRun = {
   feature?: string;
   submission?: { id: string; baselineCommit: string; paths: string[] };
   retrieval?: Omit<RetrievedEvidence, 'sources'>;
+  codeRetrieval?: {
+    strategy: 'on_demand';
+    excerpts: { sourceId: string; startLine: number; endLine: number }[];
+    searches: { query: string; paths: string[]; truncated: boolean }[];
+  };
   requestTimeoutMs?: number;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
   stage: string;
@@ -88,9 +93,13 @@ export type AnalysisRun = {
   changedFiles: string[];
   correlation?: BrainCorrelation;
   calls?: BrainModelCall[];
+  /** Aggregate-only archives cannot reconstruct cache usage or individual calls. */
+  legacyCostEstimate?: { costUsd: number; estimatedAt: string };
 };
 
 export type BrainCorrelation = {
+  developerId?: string;
+  workstationId?: string;
   workItemId?: string;
   ticket?: string;
   originSessionId?: string;

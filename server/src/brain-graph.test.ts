@@ -278,7 +278,7 @@ test('Current graph shows memory before any analysis and isolates project and ap
       },
     },
   });
-  assert.equal(graph.nodes.filter((node) => node.kind === 'source').length, 4);
+  assert.equal(graph.nodes.filter((node) => node.kind === 'source').length, 3);
   assert.ok(!JSON.stringify(graph).includes('Unrelated source'));
   const entity = graph.nodes.find((node) => node.kind === 'entity');
   assert.equal(entity?.sourceId, capture.id);
@@ -353,7 +353,9 @@ test('A Cognee failure or foreign response keeps recorded historical evidence bu
     memory,
   );
   assert.ok(
-    withdrawn.nodes.find((node) => node.sourceId === source.id)?.status?.includes('withdrawn'),
+    withdrawn.nodes
+      .find((node) => node.sourceId === source.id)
+      ?.status?.includes('analysis capture'),
   );
   assert.ok(withdrawn.nodes.some((node) => node.kind === 'finding' && node.analysisId === run.id));
   assert.equal(withdrawn.warning, undefined, 'withdrawn datasets must not be queried');
@@ -386,7 +388,14 @@ test('Graph endpoint selects the latest successful registered snapshot and marks
   const app = Fastify();
   registerMemoryGraph(app, emptyMemory(), service);
   try {
-    const response = await app.inject('/api/brain/graph');
+    const knowledge = (await app.inject('/api/brain/graph')).json();
+    assert.deepEqual(
+      knowledge.nodes.map((node: { kind: string }) => node.kind),
+      ['project'],
+    );
+    assert.equal(knowledge.nodes[0].analysisId, undefined);
+    assert.match(knowledge.scope.description, /Current knowledge sources/);
+    const response = await app.inject('/api/brain/graph?view=analysis');
     assert.equal(response.statusCode, 200);
     const graph = response.json();
     assert.equal(graph.scope.id, 'project:dashboard');
@@ -406,7 +415,9 @@ test('Graph endpoint selects the latest successful registered snapshot and marks
     assert.equal((await app.inject('/api/brain/graph?scope=demo')).statusCode, 400);
     assert.equal((await app.inject('/api/brain/graph?scope=shared')).json().scope.id, 'shared');
     await writeFile(projectsPath, JSON.stringify([{ ...project, scope: 'Changed scope' }]));
-    const historical = (await app.inject('/api/brain/graph?scope=project:dashboard')).json();
+    const historical = (
+      await app.inject('/api/brain/graph?scope=project:dashboard&view=analysis')
+    ).json();
     assert.match(historical.scope.description, /Historical analysis/);
     assert.equal(historical.nodes[0].summary, 'Hook payloads');
   } finally {

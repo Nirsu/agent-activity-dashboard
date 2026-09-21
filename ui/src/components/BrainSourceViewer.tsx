@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { notionReadingMarkdown, notionSubpageTitle } from './brain/notionMarkdown';
+import { remarkNotionBlocks } from './brain/remarkNotionBlocks';
 import type { BrainSource } from './brain/types';
 
 const sourceGroups = {
@@ -72,7 +73,7 @@ export default function BrainSourceViewer({
   const rendered = useMemo(
     () => (
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={source.kind === 'notion' ? [remarkGfm, remarkNotionBlocks] : [remarkGfm]}
         skipHtml
         components={{
           // Source documents are untrusted: do not load remote images or embed raw HTML.
@@ -123,10 +124,9 @@ export default function BrainSourceViewer({
           ),
         }}
       >
-        {(source.kind === 'notion'
+        {source.kind === 'notion'
           ? notionReadingMarkdown(source.content ?? '')
-          : (source.content ?? '')
-        ).replace(/^<\/?aside>\s*$/gm, '')}
+          : (source.content ?? '').replace(/^<\/?aside>\s*$/gm, '')}
       </Markdown>
     ),
     [source.content, source.kind],

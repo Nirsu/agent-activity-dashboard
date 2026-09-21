@@ -1,0 +1,12 @@
+{
+  "hookTimeoutSeconds": 5,
+  "startupTimeoutMs": 1200,
+  "healthTimeoutMs": 200,
+  "startupPollMs": 75,
+  "retryIntervalMs": 2000,
+  "forwardTimeoutMs": 5000,
+  "policyCacheMs": 30000,
+  "maxQueueBytes": 67108864,
+  "maxQueueEntries": 10000,
+  "maxQueueAgeMs": 86400000
+}

@@ -36,6 +36,78 @@ test('reader renders tables and callout text without executing HTML or loading r
   assert.doesNotMatch(html, /<script|<img|href="javascript:/i);
 });
 
+const notionBlocks = [
+  '<callout icon="🧱">',
+  '\tSocle technique retenu pour la nouvelle application.',
+  '</callout>',
+  '<table header-row="true">',
+  '<tr><td>Couche</td><td>Technologie</td></tr>',
+  '<tr><td>Application mobile</td><td>React Native avec Expo</td></tr>',
+  '<tr><td>BFF</td><td>**NestJS**</td></tr>',
+  '</table>',
+  '## Ce qui vaut pour toutes les couches',
+  'La marque blanche doit être dans les fondations dès le premier jour.',
+].join('\n');
+
+function renderNotion(content: string, line?: number) {
+  return renderToStaticMarkup(
+    <BrainSourceViewer
+      source={{ ...source, content }}
+      sources={[]}
+      line={line}
+      loading={false}
+      onSelect={() => {}}
+      onClose={() => {}}
+    />,
+  );
+}
+
+test('Notion callouts and HTML tables preserve the following text without blank separators', () => {
+  const html = renderNotion(notionBlocks);
+  assert.match(html, /<blockquote>/);
+  assert.match(html, /Socle technique retenu/);
+  assert.match(html, /<th>Couche<\/th>/);
+  assert.match(html, /<td>React Native avec Expo<\/td>/);
+  assert.match(html, /<strong>NestJS<\/strong>/);
+  assert.match(html, /<h2>Ce qui vaut pour toutes les couches<\/h2>/);
+  assert.match(html, /La marque blanche/);
+  assert.doesNotMatch(html, /<callout|header-row=/);
+  const raw = renderNotion(notionBlocks, 5);
+  assert.match(raw, /data-line="5" class="highlight"><code>&lt;tr&gt;&lt;td&gt;Couche/);
+  assert.match(raw, /&lt;callout icon=&quot;🧱&quot;&gt;/);
+});
+
+test('Notion block examples stay literal in fenced, inline and indented code', () => {
+  const content = `\`\`\`html\n${notionBlocks}\n\`\`\`\n\n~~~html\n${notionBlocks}\n~~~\n\n\`<callout>Example</callout>\`\n\n    <table>\n    <tr><td>Literal</td></tr>\n    </table>`;
+  const html = renderNotion(content);
+  assert.doesNotMatch(html, /<table>|<blockquote>/);
+  assert.equal((html.match(/&lt;callout icon=/g) ?? []).length, 2);
+  assert.match(html, /<code>&lt;callout&gt;Example&lt;\/callout&gt;<\/code>/);
+  assert.match(html, /&lt;td&gt;Literal&lt;\/td&gt;/);
+});
+
+test('unsupported or malformed Notion blocks remain readable and unsafe markup stays inert', () => {
+  const html = renderNotion(
+    [
+      '<unknown-block>',
+      'Text must remain visible.',
+      '</unknown-block>',
+      '',
+      '<table><tr><td>Unclosed table',
+      '',
+      '<script>alert(1)</script>',
+      '',
+      '<callout onclick="alert(1)">',
+      '\t[Unsafe](javascript:alert) ![Remote](https://example.invalid/tracking.png)',
+      '</callout>',
+    ].join('\n'),
+  );
+  assert.match(html, /Text must remain visible/);
+  assert.match(html, /Unclosed table/);
+  assert.match(html, /Illustration: Remote/);
+  assert.doesNotMatch(html, /<script|<img|onclick=|href="javascript:/i);
+});
+
 test('submitted code is labeled as a snapshot rather than a Git commit', () => {
   const snapshot = {
     ...source,

@@ -1,4 +1,10 @@
 {
+  "access": {
+    "maxTokenDays": 365,
+    "defaultTokenDays": 90,
+    "lastUsedIntervalMs": 60000,
+    "auditDisplayLimit": 100
+  },
   "git": {
     "timeoutMs": 15000,
     "maxBufferBytes": 2000000
@@ -29,6 +35,16 @@
     "maxNameCharacters": 120,
     "maxGitPathCharacters": 300,
     "maxLocalPathCharacters": 500
+  },
+  "codeRetrieval": {
+    "maxSubmissionBytes": 400000,
+    "maxRounds": 5,
+    "maxRequestsPerRound": 4,
+    "initialFiles": 3,
+    "maxLinesPerRead": 160,
+    "maxCatalogFiles": 200,
+    "maxSearchMatches": 30,
+    "maxQueryCharacters": 200
   },
   "memory": {
     "maxRecentRuns": 30,

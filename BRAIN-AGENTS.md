@@ -33,8 +33,10 @@ npm run brain
    its approval. Enable **Include subpages** to discover nested pages. Enable
    **Automatically approve all subpages** to approve and index existing and future
    descendants; otherwise they start as drafts. The root's own approval is separate.
-7. Synchronize and wait for an approved source to become ready. Then open Project analyses,
-   describe a narrow feature change, and launch its analysis.
+7. Synchronize and wait for an approved source to become ready. In Project analyses,
+   select the project and open **Run a manual analysis**. Leave the commit empty
+   to review the project's server HEAD, or enter a full commit SHA. Add a base
+   commit to focus on changes since that revision. The feature description is optional.
 
 The portable launcher is `scripts/start-brain.mjs`. It binds the API and preview to
 loopback and shuts both down on Ctrl+C. Provider configuration does not prove that
@@ -49,9 +51,17 @@ Each entry in `brain.projects.json` contains:
 - `repoPath`: a complete Git checkout available on the Brain server; relative paths
   resolve from this JSON file's location.
 - `codePaths`: exact repository paths or prefixes ending in `/`. No globbing,
-  automatic whole-repository analysis, or reading another project's files.
+  implicit access outside those paths, or reading another project's files.
 - `specs`: optional authoritative Git files, such as `{"kind":"git","path":"README.md"}`.
   An empty list is valid when the project's specifications are registered in Memory.
+
+The bundled `dashboard` registration covers Harmony Brain and the Agent Activity
+Dashboard across server, UI, hooks, tooling and deployment. It uses the README
+and approved memory as references. Both the local configuration and the example
+use this project scope; there is no hook-only demonstration registration.
+Keep the project ID stable when adjusting its scope to preserve source associations
+and history. Previous analyses retain their original scope and become historical
+when the project configuration changes.
 
 Register Notion pages through Memory, not through local export paths in this file.
 The selected page is captured through the durable MCP connection. Its scope, approval,
@@ -74,6 +84,17 @@ they do not rewrite the authoritative specification.
 Git specifications are captured from the registered checkout. Analysis code is read
 at the requested immutable commit. The analysis records the source/index generation
 actually used, rather than claiming that a later source edit was already checked.
+Application code and tests are never indexed in Cognee. During comparison, Brain
+starts with a few bounded code excerpts, prioritizing changed files, then permits
+literal searches and line-range reads inside the registered paths. Every read uses
+the same commit plus any submitted overlay. Unchanged dependencies and tests can be
+read when needed; files outside the registered scope remain inaccessible.
+Search hits guide navigation and cannot serve as citations until their passages
+have been read. The analysis retains its captures and the exact ranges supplied.
+`codeRetrieval.maxSubmissionBytes` bounds the complete submitted snapshot separately
+from the model's evidence budget (`analysis.maxSourceBytes`). Submitting multiple
+files does not send their full contents to the model. The MCP request body also
+remains bounded by `mcp.maxRequestBytes`.
 
 ## A developer agent or CI calls Brain
 
@@ -90,7 +111,7 @@ Brain does not execute `git fetch`, checkout, push, or arbitrary patches from an
 
 ```bash
 npm run brain:check -- dashboard
-npm run brain:check -- dashboard FULL_HEAD_SHA FULL_BASE_SHA "Check sanitized hook summaries"
+npm run brain:check -- dashboard FULL_HEAD_SHA FULL_BASE_SHA "Review changes against the project references"
 ```
 
 Without a head SHA, the client resolves HEAD in its own current working directory.
@@ -106,14 +127,18 @@ The client submits:
   "projectId": "dashboard",
   "commit": "FULL_HEAD_SHA",
   "baseCommit": "FULL_BASE_SHA",
-  "feature": "Check sanitized hook summaries"
+  "feature": "Review changes against the project references"
 }
 ```
 
 `POST /api/brain/analyses` returns HTTP 202 with a run ID. Poll
 `GET /api/brain/analyses/{id}` for stages and results. With a base SHA, Brain requires
-it to be an ancestor of the head and reads only changed allowed code files. Deletions
-remain recorded as changed files; missing evidence does not imply approval.
+it to be an ancestor of the head and prioritizes changed allowed code files.
+Related unchanged code and tests remain available as context. To review one commit's
+changes, use its first parent as the base; for a merge, choose the comparison parent
+explicitly. With no base, Brain reviews the project at the selected revision, which
+also supports an initial commit. Deletions remain recorded as changed files;
+missing evidence does not imply approval.
 
 The result includes cited findings, limitations, captured source/index references,
 and human-review history. `brain:check` prints the citations, requirement count,
@@ -129,12 +154,17 @@ to merge or deploy. No Brain MCP server is required for this HTTP contract.
 The server executes the [reader](server/prompts/reader.md),
 [comparison](server/prompts/comparison.md), then
 [arbitration preparation](server/prompts/arbitration.md). Orchestration is enforced
-by server code, with at most three OpenAI Responses calls and no autonomous loop:
+by server code, with three roles and a bounded retrieval loop during comparison:
 
-1. Validate the registered project and revision; capture allowed code and approved
-   references. Apply submitted code only as an immutable overlay on the baseline.
+1. Validate the registered project and revision; capture approved references and
+   list allowed code paths. Apply submitted code only as an immutable overlay on the baseline.
 2. Load the three prompts and record their hash. Run each role in order, validating
    its structured output, IDs and exact citations before continuing.
+   Comparison can request additional code before returning its checks. The
+   `codeRetrieval` settings in `server/src/brain/config.json` bound reads, search
+   results and additional calls. Each comparison round records its own usage and
+   has the configured per-request timeout. With the defaults, an analysis makes
+   at most eight model calls; reaching the retrieval limit does not imply approval.
 3. Recheck source approval and scope before each call and before completion. Stop
    on the first failure without retrying through another provider.
 4. Store the evidence, model usage, progress and results in PostgreSQL when
@@ -163,7 +193,9 @@ Shared deployments require separate `VIEWER_TOKEN` and `BRAIN_ADMIN_TOKEN` value
 The latter protects source/connection management and is entered in Brain Settings.
 An agent only needs the viewer token. The private local launcher permits trusted
 loopback administration without these tokens. This pilot separates administration
-from normal API access; it does not provide per-person or per-project authorization.
+from normal API access. [Accounts](ACCOUNTS.md) adds individual workstation tokens
+for MCP and telemetry. Active accounts share registered Brain projects, while
+browser administration retains shared keys.
 
 ## Container deployment
 
@@ -199,11 +231,13 @@ See [synchronization and optional webhooks](NOTION-MCP.md#synchronization-and-op
 for Notion subscriptions, GitHub mappings and signature verification. Polling works
 without webhook enrollment. Notifications request a fresh read, not an analysis.
 
-Open `/#brain/graph` for current project/shared memory, recorded citations, findings,
-reviews, and explicitly labeled extracted concepts. Zoom, filters, keyboard selection,
+Open `/#brain/graph` for current project/shared knowledge sources and their page hierarchy.
+Enable **Show extracted concepts** to inspect Cognee relationships. **Latest analysis**
+shows captured code, citations, findings and reviews separately. Zoom, filters, keyboard selection,
 and captured-source navigation remain available. Only approved, ready datasets contribute
 extracted entities. Historical analyses keep their original evidence. A Cognee outage
-leaves recorded links visible with a warning rather than fabricating replacement relations.
+leaves recorded links visible with a warning when extracted concepts are requested.
+See [index maintenance](COGNEE.md#remove-obsolete-index-generations) to prune old derived datasets.
 
 ## Settings, limits, and verification
 

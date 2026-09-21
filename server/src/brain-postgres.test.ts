@@ -49,6 +49,22 @@ test(
       memory = new MemoryStore(noSqlitePath);
       await memory.init();
       await memory.saveSource(source);
+      await memory.saveDataset('obsolete-index', 'dataset-1');
+      await assert.rejects(
+        memory.transaction(async () => {
+          await memory!.removeDataset('obsolete-index');
+          throw new Error('Rollback index removal');
+        }),
+        /Rollback index removal/,
+      );
+      assert.equal(memory.dataset('obsolete-index'), 'dataset-1');
+      await memory.removeDataset('obsolete-index');
+      assert.equal(memory.dataset('obsolete-index'), undefined);
+      assert.equal(
+        (await getPostgresPool()!.query('SELECT count(*) FROM brain_memory_datasets')).rows[0]
+          .count,
+        '0',
+      );
       assert.equal(
         (
           await getPostgresPool()!.query('SELECT data FROM brain_memory_sources WHERE id=$1', [

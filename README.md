@@ -6,7 +6,7 @@ The **Harmony Brain** tab connects approved project references, Notion sources,
 Cognee memory search, and persistent human reviews. The **Project analyses** view
 runs actual model calls once configured, with project-specific specifications,
 Git revisions and submitted changes. See
-[agent setup and the first real test](BRAIN-AGENTS.md). Without API access, it
+[project setup and commit reviews](BRAIN-AGENTS.md). Without API access, it
 explicitly remains unavailable; it does not fabricate AI results.
 
 The Board highlights active main tasks. Open a task to inspect its linked subagents
@@ -42,9 +42,10 @@ See [PostgreSQL setup and migration](POSTGRES.md) and
    tool summaries.
 
 Both sources pass through a local relay that forwards only explicitly selected
-Git repositories. Install it once per developer, choose projects with
-`npm run agents:projects -- --allow /path/to/project`, and keep
-`npm run agents:relay` running. New installations send nothing by default.
+Git repositories. Install it once per developer and choose projects with
+`npm run agents:projects -- --allow /path/to/project`. Installed hooks start the
+relay automatically; it queues filtered events locally during dashboard outages
+and retries delivery. New installations send nothing until a repository is selected.
 See [developer setup and project selection](fleet/SETUP.md).
 
 ## Architecture

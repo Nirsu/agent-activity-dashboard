@@ -1,10 +1,31 @@
 [
   {
     "id": "dashboard",
-    "name": "Dashboard — safe hook summaries",
-    "scope": "Check one feature only: lifecycle hooks send sanitized tool summaries instead of raw commands, tool arguments, or tool output. Use the approved dashboard and shared specifications registered in Brain Memory, then trace safeToolSummary and the outbound /activity payload in hooks/hook.js. Exclude OpenTelemetry collection, server storage, retention, deployment, UI, and other products. This analysis does not establish overall privacy compliance.",
+    "name": "Harmony Brain & Agent Activity Dashboard",
+    "scope": "Review Harmony Brain and the Agent Activity Dashboard against the registered Git specifications and approved project/shared references in Brain Memory. Cover project memory, source synchronization, code analyses, human reviews, the graph, agent activity, telemetry, persistence, the user interface, developer integrations and deployment. Without a base commit, examine the project at the selected revision. With a base commit or submitted files, focus on the changed behavior and inspect related code and tests for context. An optional feature description narrows the review. Report missing requirements or evidence explicitly; do not infer requirements for other products or claim exhaustive project compliance.",
     "repoPath": ".",
-    "specs": [],
-    "codePaths": ["hooks/hook.js"]
+    "specs": [{ "kind": "git", "path": "README.md" }],
+    "codePaths": [
+      "server/src/",
+      "server/prompts/",
+      "server/package.json",
+      "server/tsconfig.json",
+      "ui/src/",
+      "ui/index.html",
+      "ui/package.json",
+      "ui/tsconfig.json",
+      "ui/vite.config.ts",
+      "hooks/",
+      "fleet/",
+      "scripts/",
+      "docker/",
+      "Dockerfile",
+      "compose.yaml",
+      "compose.brain.yaml",
+      "compose.cognee.yaml",
+      "compose.postgres.yaml",
+      "package.json",
+      "otel-env.sh"
+    ]
   }
 ]

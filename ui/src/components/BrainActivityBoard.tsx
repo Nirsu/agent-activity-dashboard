@@ -54,8 +54,15 @@ function AnalysisRow({ run }: { run: BrainActivityRun }) {
         </div>
         <div className="brain-run-usage">
           <span>{tokenLabel}</span>
-          <small>
+          <small
+            title={
+              run.costBasis === 'legacy_uncached'
+                ? 'Estimated from archived token totals at uncached rates. Cache discounts are unknown. Excluded from call-level usage totals.'
+                : undefined
+            }
+          >
             {run.costUsd == null ? 'Cost unavailable' : `${usd(run.costUsd)} estimated`}
+            {run.costUsd != null && run.costBasis === 'legacy_uncached' ? ' · cache unknown' : ''}
           </small>
         </div>
         <div className="brain-run-time">

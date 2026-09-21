@@ -6,6 +6,11 @@ import type { PoolClient } from 'pg';
 import { getPostgresPool } from '../persistence/postgres.js';
 
 export type BrainTable =
+  | 'access_accounts'
+  | 'access_tokens'
+  | 'access_audit'
+  | 'access_settings'
+  | 'access_repositories'
   | 'brain_agent_runs'
   | 'brain_activity_events'
   | 'brain_memory_sources'
@@ -215,6 +220,19 @@ export class BrainStorage {
     } else {
       callback();
     }
+  }
+
+  removeDatasetBinding(id: string): Promise<void> {
+    const operation = async () => {
+      this.healthy();
+      if (this.sqlite) {
+        this.sqlite.prepare('DELETE FROM brain_memory_datasets WHERE capture_id=?').run(id);
+      } else {
+        await this.client!.query('DELETE FROM brain_memory_datasets WHERE id=$1', [id]);
+        (this.context.getStore()?.records ?? this.records).get('brain_memory_datasets')!.delete(id);
+      }
+    };
+    return this.context.getStore() ? operation() : this.serialize(operation);
   }
 
   async transaction<T>(work: () => T | Promise<T>): Promise<T> {

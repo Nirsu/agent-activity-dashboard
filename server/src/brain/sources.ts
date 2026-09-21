@@ -25,6 +25,7 @@ export function minimizeSourceContent(raw: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/^(Owner|Porteur):.*$/gm, '$1: [not indexed]')
     .replace(/\b(?:sk-[a-zA-Z0-9_-]{20,}|gh[pousr]_[a-zA-Z0-9]{20,})\b/g, '[secret redacted]')
+    .replace(/\bhb_[a-f0-9-]{36}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, '[secret redacted]')
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, (value) =>
       value
         .split('\n')

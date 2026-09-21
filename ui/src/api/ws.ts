@@ -29,7 +29,14 @@ if (urlToken) {
   clean.searchParams.delete('token');
   history.replaceState(null, '', clean.toString());
 }
-const viewerToken = urlToken ?? localStorage.getItem('aad_token') ?? '';
+let viewerToken = urlToken ?? localStorage.getItem('aad_token') ?? '';
+
+export function setDashboardToken(value: string) {
+  viewerToken = value;
+  if (value) localStorage.setItem('aad_token', value);
+  else localStorage.removeItem('aad_token');
+  dispatchEvent(new Event('dashboard-auth-changed'));
+}
 
 /** Headers carrying the viewer token for REST fetches. */
 export function authHeaders(): Record<string, string> {
@@ -55,9 +62,6 @@ export function apiFetch(path: string, init: RequestInit = {}): Promise<Response
 
 const WS_URL = SERVER_URL.replace(/^http/, 'ws') + '/live';
 // Subprotocol values are RFC6455 tokens, so the value is percent-encoded.
-const WS_PROTOCOLS = viewerToken
-  ? [WS_TOKEN_PROTOCOL_PREFIX + encodeURIComponent(viewerToken)]
-  : undefined;
 
 const MAX_EVENTS = 300;
 
@@ -71,6 +75,7 @@ export interface DashboardState {
 
 /** Subscribes to the server WS, auto-reconnecting. Returns live dashboard state. */
 export function useDashboard(): DashboardState {
+  const [authRevision, setAuthRevision] = useState(0);
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<SessionState[]>([]);
   const [aggregate, setAggregate] = useState<Aggregate | null>(null);
@@ -80,19 +85,37 @@ export function useDashboard(): DashboardState {
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    const changed = () => setAuthRevision((value) => value + 1);
+    addEventListener('dashboard-auth-changed', changed);
+    return () => removeEventListener('dashboard-auth-changed', changed);
+  }, []);
+
+  useEffect(() => {
     let closed = false;
+    setConnected(false);
+    setSessions([]);
+    setEvents([]);
+    setAggregate(null);
+    setProviderAggregates(null);
 
     const connect = () => {
-      const ws = new WebSocket(WS_URL, WS_PROTOCOLS);
+      const protocols = viewerToken
+        ? [WS_TOKEN_PROTOCOL_PREFIX + encodeURIComponent(viewerToken)]
+        : undefined;
+      const ws = new WebSocket(WS_URL, protocols);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        if (!closed) setConnected(true);
+      };
       ws.onclose = () => {
+        if (closed) return;
         setConnected(false);
-        if (!closed) retryRef.current = setTimeout(connect, 1500);
+        retryRef.current = setTimeout(connect, 1500);
       };
       ws.onerror = () => ws.close();
       ws.onmessage = (e) => {
+        if (closed) return;
         const msg = JSON.parse(e.data as string) as ServerMessage;
         if (msg.type === 'snapshot') {
           setSessions(msg.sessions);
@@ -115,7 +138,7 @@ export function useDashboard(): DashboardState {
       if (retryRef.current) clearTimeout(retryRef.current);
       wsRef.current?.close();
     };
-  }, []);
+  }, [authRevision]);
 
   return { connected, sessions, aggregate, providerAggregates, events };
 }

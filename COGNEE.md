@@ -3,6 +3,8 @@
 Cognee is a derived search index. Brain keeps source captures, publication decisions,
 analysis citations, and human reviews independently. Deleting a Cognee index does not
 delete those records or modify Notion.
+Only approved reference documents and scoped human-review context are indexed.
+Application code and tests are read from a pinned Git snapshot during analysis.
 
 ## Start the private service
 
@@ -113,6 +115,32 @@ new/changed approved documents does incur model calls; repeated unchanged syncs 
 the existing index. Retrieval incurs query embeddings, but no answer-generation call.
 
 ## Pinned API and verification
+
+### Remove obsolete index generations
+
+Stop Brain while keeping PostgreSQL and Cognee running, build the server, then inspect
+the maintenance plan before applying it:
+
+```bash
+npm run build --workspace server
+npm run brain:prune-index
+npm run brain:prune-index -- --apply
+npm run brain
+```
+
+The command requires PostgreSQL worker locks and refuses pending synchronization.
+It deletes only known Brain datasets no longer referenced by any current source,
+then removes their cached index bindings. It preserves source registrations,
+captures, analyses, approvals, current datasets, and unrelated Cognee datasets.
+Reanalyzing an old Git specification may recreate its deleted derived index.
+The command performs no indexing or model calls.
+
+The graph opens on **Knowledge sources** with extracted concepts hidden. Enable
+**Show extracted concepts** to inspect Cognee relationships, or switch to **Latest
+analysis** for the captured code, requirements and review evidence. Historical
+analysis captures are kept separately from the current knowledge view.
+
+### Supported service API
 
 Image: `cognee/cognee:1.5.4` at multiarchitecture digest
 `sha256:68b755bebae2a19f482069b5efcbe8e4bdf717a68f6afb6fef80c3c352c37015`.

@@ -6,6 +6,8 @@ import type { Analysis, BrainSource, SourceSelection } from './types';
 export function useMemoryGraph() {
   const [graph, setGraph] = useState<MemoryGraph | null>(null);
   const [scope, setScope] = useState('');
+  const [view, setView] = useState<'knowledge' | 'analysis'>('knowledge');
+  const [concepts, setConcepts] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -19,6 +21,7 @@ export function useMemoryGraph() {
 
   useEffect(() => {
     ++sourceVersion.current;
+    setGraph(null);
     setDocument(null);
     setLoadingSource(false);
     setSourceError('');
@@ -27,13 +30,17 @@ export function useMemoryGraph() {
     return () => {
       ++sourceVersion.current;
     };
-  }, [scope]);
+  }, [scope, view, concepts]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError('');
-    brainRequest<MemoryGraph>(`/graph${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`)
+    const query = new URLSearchParams({ view, concepts: String(concepts) });
+    if (scope) {
+      query.set('scope', scope);
+    }
+    brainRequest<MemoryGraph>(`/graph?${query}`)
       .then((data) => {
         if (!cancelled) {
           setGraph(data);
@@ -52,7 +59,7 @@ export function useMemoryGraph() {
     return () => {
       cancelled = true;
     };
-  }, [scope, refreshVersion]);
+  }, [scope, view, concepts, refreshVersion]);
 
   async function openSource(sourceId: string, line?: number, runId = analysisId.current) {
     const version = ++sourceVersion.current;
@@ -108,6 +115,10 @@ export function useMemoryGraph() {
     graph,
     scope,
     setScope,
+    view,
+    setView,
+    concepts,
+    setConcepts,
     loading,
     error,
     sourceError,

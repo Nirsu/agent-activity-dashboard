@@ -16,7 +16,7 @@ export default function BrainAgents() {
           <div className="brain-eyebrow">DECISIONS / PROJECT CODE / HUMAN REVIEW</div>
           <h1>Project analyses</h1>
           <p>
-            Check a feature against its specifications and inspect the evidence before deciding.
+            Select a project to review analysis results, inspect the evidence and record decisions.
           </p>
         </div>
         <span className="brain-badge">
@@ -85,8 +85,12 @@ export default function BrainAgents() {
             onRetryDetail={analyses.retryDetail}
             onPrepareRetry={() => {
               analyses.prepareRetry();
-              document.getElementById('brain-analysis-setup')?.scrollIntoView({ block: 'start' });
-              document.getElementById('brain-agent-feature')?.focus({ preventScroll: true });
+              const setup = document.getElementById('brain-analysis-setup');
+              if (setup instanceof HTMLDetailsElement) {
+                setup.open = true;
+              }
+              setup?.scrollIntoView({ block: 'start' });
+              document.getElementById('brain-agent-commit')?.focus({ preventScroll: true });
             }}
           />
         </>

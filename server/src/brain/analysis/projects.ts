@@ -19,6 +19,7 @@ export function requireRepoPath(value: unknown): string {
     path.startsWith('/') ||
     path.includes('\\') ||
     path.includes(':') ||
+    /[\u0000-\u001f]/.test(path) ||
     containsTraversal ||
     sensitivePath.test(path)
   ) {
@@ -97,7 +98,7 @@ export async function readProjects(projectsPath: string): Promise<Project[]> {
   return projects;
 }
 
-async function runGit(project: Project, args: string[]): Promise<string> {
+export async function runGit(project: Project, args: string[]): Promise<string> {
   const { stdout } = await executeFile(
     process.env.BRAIN_GIT_BINARY ?? 'git',
     ['-C', project.repoPath, ...args],
@@ -114,7 +115,6 @@ async function runGit(project: Project, args: string[]): Promise<string> {
 export async function captureProjectSources(
   run: Pick<AnalysisRun, 'commit' | 'baseCommit' | 'sources' | 'changedFiles'>,
   project: Project,
-  options: { specificationsOnly?: boolean; submittedPaths?: string[] } = {},
 ) {
   run.commit = (
     await runGit(project, ['rev-parse', '--verify', `${run.commit ?? 'HEAD'}^{commit}`])
@@ -148,15 +148,10 @@ export async function captureProjectSources(
     run.changedFiles = changedFiles.split('\0').filter(Boolean);
   }
 
-  let capturedCodeBytes = 0;
-  function addSource(path: string, raw: string, isSpecification: boolean) {
+  function addSpecification(path: string, raw: string) {
     const sourceBytes = Buffer.byteLength(raw);
-    if (!isSpecification) {
-      capturedCodeBytes += sourceBytes;
-    }
     if (
       sourceBytes > brainConfig.analysis.maxSourceBytes ||
-      capturedCodeBytes > brainConfig.analysis.maxSourceBytes ||
       raw.includes('\0') ||
       run.sources.length >= brainConfig.analysis.maxSources
     ) {
@@ -165,10 +160,8 @@ export async function captureProjectSources(
 
     const source = makeSource('code', path, raw, run.commit);
 
-    source.id = createHash('sha256')
-      .update(`${project.id}:${isSpecification ? 'spec' : 'code'}:${source.id}`)
-      .digest('hex');
-    source.status = isSpecification ? 'published' : 'observed';
+    source.id = createHash('sha256').update(`${project.id}:spec:${source.id}`).digest('hex');
+    source.status = 'published';
     source.topic = project.name;
     run.sources.push(source);
   }
@@ -178,27 +171,8 @@ export async function captureProjectSources(
       fail('Git specification is missing from the commit or is a symbolic link.');
     }
     const content = await runGit(project, ['show', `${run.commit}:${specification.path}`]);
-    addSource(specification.path, content, true);
+    addSpecification(specification.path, content);
   }
 
-  if (options.specificationsOnly) {
-    return;
-  }
-
-  const selectedFiles = files.filter((path) => {
-    const isWithinRevisionScope = !run.baseCommit || run.changedFiles.includes(path);
-    return (
-      isAllowedCodePath(project, path) &&
-      isWithinRevisionScope &&
-      !options.submittedPaths?.includes(path)
-    );
-  });
-
-  if (selectedFiles.length === 0 && !run.baseCommit && !options.submittedPaths?.length) {
-    fail('No code files in the configured scope.');
-  }
-  for (const path of selectedFiles) {
-    const content = await runGit(project, ['show', `${run.commit}:${path}`]);
-    addSource(path, content, false);
-  }
+  return files.filter((path) => isAllowedCodePath(project, path));
 }

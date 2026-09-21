@@ -18,6 +18,11 @@ import { PersistenceQueue } from './persistence/queue.js';
 import { cachedTitle, isTicketKey, resolveTitle } from './jira.js';
 import { registerBrain } from './brain.js';
 import { isBrainCallback } from './brain/access.js';
+import { AccessStore } from './access/store.js';
+import { registerAccessRoutes } from './access/routes.js';
+import { attributeEvent } from './access/identity.js';
+import { normalizeRepositoryRemote } from './access/repositories.js';
+import type { FastifyRequest } from 'fastify';
 import type { ActivitySubtype, AgentEvent, UsageDelta } from './types.js';
 import type { BrainActivity } from './brain/analysis/types.js';
 
@@ -33,6 +38,7 @@ const nextActivityId = (suffix: string) =>
 
 interface ActivityBody {
   event_id?: string;
+  timestamp?: number;
   event?: ActivitySubtype;
   session_id?: string;
   parent_session_id?: string;
@@ -129,6 +135,19 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 16 * 1024 * 1024,
   });
   const store = new Store();
+  const access = new AccessStore(resolve(config.dataDir, 'access.db'));
+  app.decorateRequest('accessPrincipal', null);
+  app.decorateRequest('authorizedRepository', null);
+  function ingestEvent(event: AgentEvent, request: FastifyRequest) {
+    const attributed = attributeEvent(event, request.accessPrincipal);
+    return request.authorizedRepository
+      ? {
+          ...attributed,
+          repo: request.authorizedRepository.name,
+          projectId: request.authorizedRepository.brainProjectId,
+        }
+      : attributed;
+  }
   const codexMetadata = openCodexMetadata(config.codexMetadataDb);
   if (config.codexMetadataDb && !codexMetadata.available)
     app.log.warn('Local Codex metadata is unavailable; sessions will use reported telemetry only.');
@@ -158,6 +177,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     store.close();
     codexMetadata.close();
     await writes.flush().catch(() => undefined);
+    await access.close();
     if (historyClaimed) {
       await releaseHistory();
     }
@@ -167,6 +187,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   try {
     historyClaimed = true;
     await acquireHistory();
+    await access.init();
     if (history.enabled) {
       store.restoreCumulative(await history.loadCumulative());
       const usageIdentities = await history.loadUsageIdentityMap();
@@ -218,6 +239,10 @@ export async function buildApp(): Promise<FastifyInstance> {
             return false;
           }
         })();
+      // CORS preflights do not cover simple POSTs or WebSocket handshakes.
+      if (!originAllowed) {
+        return reply.code(403).send({ error: 'origin not allowed' });
+      }
       if (origin && originAllowed) {
         reply.header('Access-Control-Allow-Origin', origin);
         reply.header('Vary', 'Origin');
@@ -228,15 +253,13 @@ export async function buildApp(): Promise<FastifyInstance> {
         'content-type,content-encoding,authorization,x-aad-token,x-brain-admin-token',
       );
       if (req.method === 'OPTIONS') {
-        return originAllowed
-          ? reply.code(204).send()
-          : reply.code(403).send({ error: 'origin not allowed' });
+        return reply.code(204).send();
       }
     });
 
     const ingestRoutes = new Set(['/v1/logs', '/v1/metrics', '/v1/traces', '/activity']);
     app.addHook('onRequest', async (req, reply) => {
-      const path = req.url.split('?')[0];
+      const path = req.routeOptions.url ?? req.url.split('?')[0];
       if (isBrainCallback(req)) {
         return;
       }
@@ -245,11 +268,53 @@ export async function buildApp(): Promise<FastifyInstance> {
         return reply.code(503).send({ error: 'Activity persistence is unavailable.' });
       }
       const isViewer = path.startsWith('/api/') || path === '/live';
-      const required = isIngest ? config.ingestToken : isViewer ? config.viewerToken : undefined;
-      if (required && presentedToken(req) !== required) {
+      const token = presentedToken(req);
+      const isMcp = path === '/api/brain/mcp';
+      const isAgentPolicy = path === '/api/agent-policy' && req.method === 'GET';
+      if (token?.startsWith('hb_')) {
+        const principal = await access.authenticate(token);
+        if (!principal)
+          return reply.code(401).send({ error: 'Invalid, expired or revoked workstation token.' });
+        if (!isIngest && !isMcp && !isAgentPolicy)
+          return reply
+            .code(403)
+            .send({ error: 'Workstation tokens only allow telemetry and Brain MCP.' });
+        req.accessPrincipal = principal;
+        return;
+      }
+      if (access.requireDeviceTokens && (isIngest || isMcp || isAgentPolicy)) {
+        return reply.code(401).send({ error: 'An individual workstation token is required.' });
+      }
+      const required =
+        isIngest || isAgentPolicy ? config.ingestToken : isViewer ? config.viewerToken : undefined;
+      if (required && token !== required) {
         return reply.code(401).send({ error: 'unauthorized' });
       }
+      const local =
+        ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) &&
+        /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
+      if (!required && (isIngest || isViewer) && !local) {
+        return reply.code(401).send({ error: 'Authentication is required for remote access.' });
+      }
     });
+
+    app.addHook('onRequest', async (request, reply) => {
+      const path = request.routeOptions.url ?? request.url.split('?')[0];
+      if (!ingestRoutes.has(path) || !access.filterRepositories) return;
+      const remote = normalizeRepositoryRemote(request.headers['x-harmonie-repository']);
+      const repository = access
+        .repositories()
+        .find((repo) => repo.enabled && repo.remote === remote);
+      if (!repository)
+        return reply
+          .code(403)
+          .header('x-harmonie-policy-rejected', 'repository')
+          .send({ error: 'Repository is not authorized.', code: 'repository_not_allowed' });
+      request.authorizedRepository = repository;
+    });
+    app.get('/api/agent-policy', async (_request, reply) =>
+      reply.header('Cache-Control', 'no-store').send(access.repositoryPolicy()),
+    );
 
     app.addContentTypeParser(
       ['application/json', 'application/x-protobuf', 'application/octet-stream', '*'],
@@ -258,12 +323,21 @@ export async function buildApp(): Promise<FastifyInstance> {
         try {
           let buf = body;
           if (req.headers['content-encoding']?.includes('gzip') && buf.length) {
-            buf = gunzipSync(buf);
+            buf = gunzipSync(buf, { maxOutputLength: req.routeOptions.bodyLimit });
           }
           if (!buf.length) return done(null, {});
           done(null, JSON.parse(buf.toString('utf8')));
-        } catch (err) {
-          done(err as Error, undefined);
+        } catch (error) {
+          const tooLarge = (error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE';
+          done(
+            Object.assign(
+              new Error(tooLarge ? 'Request body is too large.' : 'Invalid request body.'),
+              {
+                statusCode: tooLarge ? 413 : 400,
+              },
+            ),
+            undefined,
+          );
         }
       },
     );
@@ -281,12 +355,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     registerWebSocket(app, store);
 
     app.post('/v1/logs', async (req, reply) => {
-      store.ingestMany(parseLogs(req.body).map((event) => codexMetadata.enrich(event)));
+      store.ingestMany(
+        parseLogs(req.body).map((event) =>
+          ingestEvent(req.accessPrincipal ? event : codexMetadata.enrich(event), req),
+        ),
+      );
       await writes.flush();
       return reply.send({});
     });
     app.post('/v1/metrics', async (req, reply) => {
-      store.ingestMany(parseMetrics(req.body));
+      store.ingestMany(parseMetrics(req.body).map((event) => ingestEvent(event, req)));
       await writes.flush();
       return reply.send({});
     });
@@ -308,7 +386,10 @@ export async function buildApp(): Promise<FastifyInstance> {
           typeof b.event_id === 'string' && b.event_id.length <= 160
             ? b.event_id
             : nextActivityId('act'),
-        ts: Date.now(),
+        ts:
+          Number.isSafeInteger(b.timestamp) && b.timestamp! > 0 && b.timestamp! <= Date.now()
+            ? b.timestamp!
+            : Date.now(),
         kind: 'activity',
         provider: b.provider === 'codex' ? 'codex' : 'claude',
         client: b.client,
@@ -334,21 +415,26 @@ export async function buildApp(): Promise<FastifyInstance> {
         runId: b.run_id,
         parentRunId: b.parent_run_id,
       };
-      store.ingest(ev);
+      store.ingest(ingestEvent(ev, req));
       if (ticket) {
         void resolveTitle(ticket).then((title) => {
           if (title && title !== ticket) {
-            store.ingest({
-              id: nextActivityId('title'),
-              ts: Date.now(),
-              kind: 'activity',
-              provider: b.provider === 'codex' ? 'codex' : 'claude',
-              client: b.client,
-              subtype: 'context_update',
-              sessionId: b.session_id,
-              ticket,
-              ticketTitle: title,
-            });
+            store.ingest(
+              ingestEvent(
+                {
+                  id: nextActivityId('title'),
+                  ts: Date.now(),
+                  kind: 'activity',
+                  provider: b.provider === 'codex' ? 'codex' : 'claude',
+                  client: b.client,
+                  subtype: 'context_update',
+                  sessionId: b.session_id,
+                  ticket,
+                  ticketTitle: title,
+                },
+                req,
+              ),
+            );
           }
         });
       }
@@ -391,6 +477,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       return history.agentHistory(req.params.agent);
     });
 
+    registerAccessRoutes(app, access);
     await registerBrain(app, {
       onActivity: async (event: BrainActivity) => {
         if (

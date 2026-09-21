@@ -5,8 +5,53 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod/v4';
 import { brainConfig } from './config.js';
 import type { BrainAgents } from './analysis/service.js';
+import type { AccessPrincipal } from '../access/store.js';
+import { accessError } from '../access/store.js';
+import { deviceOriginSession } from '../access/identity.js';
 
 type BrainService = Pick<BrainAgents, 'state' | 'context' | 'start' | 'detail'>;
+
+export function scopedBrainService(
+  service: BrainService,
+  principal?: AccessPrincipal | null,
+): BrainService {
+  if (!principal) return service;
+  const allowed = async (projectId: string) => {
+    const state = await service.state();
+    if (!state.projects.some((project) => project.id === projectId))
+      accessError('Project is not registered.', 403);
+  };
+  return {
+    async state() {
+      const state = await service.state();
+      return {
+        ...state,
+        runs: [],
+        activeRunId: null,
+      };
+    },
+    async context(projectId, feature, commit) {
+      await allowed(projectId);
+      return service.context(projectId, feature, commit);
+    },
+    async detail(id) {
+      const run = await service.detail(id);
+      await allowed(run.projectId);
+      return run;
+    },
+    async start(projectId, commit, baseCommit, feature, files, correlation) {
+      await allowed(projectId);
+      if (correlation?.parentRunId)
+        await allowed((await service.detail(correlation.parentRunId)).projectId);
+      return service.start(projectId, commit, baseCommit, feature, files, {
+        ...correlation,
+        originSessionId: deviceOriginSession(principal, correlation?.originSessionId),
+        developerId: principal.account.id,
+        workstationId: principal.token.id,
+      });
+    },
+  };
+}
 
 async function toolResult(work: () => Promise<Record<string, unknown>>): Promise<CallToolResult> {
   try {
@@ -145,6 +190,7 @@ export function createBrainMcp(service: BrainService) {
           commit: run.commit,
           baseCommit: run.baseCommit,
           submission: run.submission,
+          codeRetrieval: run.codeRetrieval,
           correlation: run.correlation,
           status: run.status,
           stage: run.stage,
@@ -187,7 +233,7 @@ export function createBrainMcp(service: BrainService) {
               z
                 .object({
                   path: z.string().min(1).max(brainConfig.projects.maxGitPathCharacters),
-                  content: z.string().max(brainConfig.analysis.maxSourceBytes).nullable(),
+                  content: z.string().max(brainConfig.codeRetrieval.maxSubmissionBytes).nullable(),
                 })
                 .strict(),
             )
@@ -235,7 +281,7 @@ export function registerBrainMcp(app: FastifyInstance, service: BrainService) {
     '/api/brain/mcp',
     { bodyLimit: brainConfig.mcp.maxRequestBytes },
     async (request, reply) => {
-      const server = createBrainMcp(service);
+      const server = createBrainMcp(scopedBrainService(service, request.accessPrincipal));
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

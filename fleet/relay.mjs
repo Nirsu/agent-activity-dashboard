@@ -3,8 +3,15 @@
 import { createServer } from 'node:http';
 import { gunzipSync } from 'node:zlib';
 import { resolve } from 'node:path';
+import { dirname, join } from 'node:path';
+import { readFile, writeFile, rename } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { defaultConfigPath, readPolicy, selectedRepository } from './project-policy.mjs';
+import { RelayOutbox, relayCredentialId } from './relay-outbox.mjs';
+
+const relayLimits = createRequire(import.meta.url)('./relay-config.json');
 
 const maximumBodyBytes = 16 * 1024 * 1024;
 const sessionLifetimeMs = 24 * 60 * 60 * 1000;
@@ -159,11 +166,52 @@ export class ProjectFilter {
 export async function startRelay({
   configPath = defaultConfigPath(),
   port,
-  token = process.env.AAD_TOKEN,
+  token = process.env.HARMONIE_TOKEN || process.env.AAD_TOKEN,
   forward = fetch,
+  limits = relayLimits,
 } = {}) {
   const initial = readPolicy(configPath);
+  const credentialId = relayCredentialId(token);
   const filter = new ProjectFilter();
+  filter.applyPolicy(initial);
+  const sessionsPath = join(dirname(configPath), 'relay-sessions.json');
+  try {
+    const saved = JSON.parse(await readFile(sessionsPath, 'utf8'));
+    if (
+      saved.dashboardUrl === initial.dashboardUrl &&
+      saved.credentialId === credentialId &&
+      Array.isArray(saved.sessions)
+    ) {
+      for (const [key, session] of saved.sessions.slice(-maximumSessions)) {
+        if (
+          typeof key === 'string' &&
+          Number.isFinite(session?.at) &&
+          Date.now() - session.at < sessionLifetimeMs &&
+          initial.projects.includes(session.project)
+        ) {
+          filter.sessions.set(key, session);
+        }
+      }
+    }
+  } catch {
+    /* A new or damaged session cache requires a fresh identifying hook. */
+  }
+  let sessionWrites = Promise.resolve();
+  function saveSessions(policy) {
+    const text = JSON.stringify({
+      dashboardUrl: policy.dashboardUrl,
+      credentialId,
+      sessions: [...filter.sessions],
+    });
+    const write = sessionWrites.then(async () => {
+      await writeFile(`${sessionsPath}.tmp`, text, { mode: 0o600 });
+      await rename(`${sessionsPath}.tmp`, sessionsPath);
+    });
+    sessionWrites = write.catch(() => {});
+    return write;
+  }
+  const outbox = new RelayOutbox(configPath, forward, token, limits);
+  await outbox.init();
   const server = createServer(async (request, response) => {
     const send = (status, value) => {
       response.writeHead(status, { 'content-type': 'application/json' });
@@ -177,7 +225,11 @@ export async function startRelay({
         return send(200, {
           ok: true,
           service: 'harmonie-project-relay',
+          version: 4,
+          credentialId,
+          configurationId: createHash('sha256').update(resolve(configPath)).digest('hex'),
           projects: policy.projects.length,
+          delivery: outbox.status(),
         });
       }
       if (
@@ -199,26 +251,35 @@ export async function startRelay({
       }
       const body = JSON.parse(data.toString('utf8') || '{}');
       const policy = readPolicy(configPath);
-      const payload =
-        request.url === '/activity'
-          ? filter.activity(body, policy)
-          : request.url === '/v1/logs'
-            ? filter.logs(body, policy)
-            : request.url === '/v1/metrics'
-              ? filter.metrics(body, policy)
-              : undefined;
-      if (!payload) return send(200, {});
-      const headers = { 'content-type': 'application/json' };
-      if (token) headers.authorization = `Bearer ${token}`;
-      const result = await forward(`${policy.dashboardUrl}${request.url}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        redirect: 'error',
-        signal: AbortSignal.timeout(5000),
-      });
-      await result.body?.cancel();
-      send(result.ok ? 200 : 502, {});
+      if (request.url === '/activity') {
+        const payload = filter.activity(body, policy);
+        // Bind this event before another request can change the session's cwd.
+        const project = payload
+          ? filter.sessions.get(sessionKey(payload.provider, payload.session_id)).project
+          : undefined;
+        await saveSessions(policy);
+        if (payload) {
+          await outbox.enqueue(request.url, payload, project, policy.dashboardUrl);
+        }
+      } else if (request.url === '/v1/logs' || request.url === '/v1/metrics') {
+        filter.applyPolicy(policy);
+        const sessions = [...filter.sessions];
+        const batches = [];
+        for (const project of new Set(sessions.map(([, session]) => session.project))) {
+          const scoped = new ProjectFilter();
+          scoped.applyPolicy(policy);
+          scoped.sessions = new Map(sessions.filter(([, session]) => session.project === project));
+          const payload =
+            request.url === '/v1/logs' ? scoped.logs(body, policy) : scoped.metrics(body, policy);
+          if (payload) batches.push({ payload, project });
+        }
+        for (const { payload, project } of batches) {
+          await outbox.enqueue(request.url, payload, project, policy.dashboardUrl);
+        }
+      }
+      // Acknowledge durable local acceptance; delivery must not block the coding client.
+      send(200, {});
+      void outbox.flush();
     } catch {
       send(503, { error: 'Local project filtering or forwarding is unavailable.' });
     }
@@ -227,6 +288,12 @@ export async function startRelay({
     server.once('error', reject);
     server.listen(port ?? initial.relayPort, '127.0.0.1', resolve);
   });
+  const retry = setInterval(() => void outbox.flush(), limits.retryIntervalMs);
+  retry.unref();
+  server.once('close', () => clearInterval(retry));
+  server.flushTelemetry = () => outbox.flush();
+  server.telemetryStatus = () => outbox.status();
+  void outbox.flush();
   return server;
 }
 

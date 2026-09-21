@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib';
 import test from 'node:test';
 import { repositoryAt, selectedRepository } from './project-policy.mjs';
 import { configureProjects } from './projects.mjs';
-import { startRelay } from './relay.mjs';
+import { startRelay, ProjectFilter } from './relay.mjs';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'harmonie-relay-'));
@@ -107,6 +107,7 @@ test('HTTP relay forwards only approved sessions across hooks, mixed logs and mi
     port: 0,
     token: 'fixture-token',
     forward: async (url, init) => {
+      if (init.method === 'GET') return Response.json({ enabled: false, repositories: [] });
       forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) });
       return new Response('{}');
     },
@@ -124,6 +125,7 @@ test('HTTP relay forwards only approved sessions across hooks, mixed logs and mi
       body: gzip ? gzipSync(data) : data,
     });
     await response.json();
+    await server.flushTelemetry();
     return response.status;
   }
   const hook = (id, cwd, provider = 'codex') => ({
@@ -194,13 +196,107 @@ test('HTTP relay forwards only approved sessions across hooks, mixed logs and mi
   await origin.json();
 });
 
+test('a concurrent hook cannot change an accepted event repository or discard its binding', async (t) => {
+  const f = await fixture(t);
+  for (const [path, name] of [
+    [f.allowed, 'one'],
+    [f.excluded, 'two'],
+  ]) {
+    execFileSync('git', ['remote', 'add', 'origin', `https://github.com/org/${name}.git`], {
+      cwd: path,
+    });
+  }
+  await writeFile(f.configPath, JSON.stringify({ ...f.policy, projects: [f.allowed, f.excluded] }));
+  const activity = ProjectFilter.prototype.activity;
+  t.mock.method(ProjectFilter.prototype, 'activity', function (payload, policy) {
+    const result = activity.call(this, payload, policy);
+    // Deterministically interleave another lifecycle hook during the disk write.
+    queueMicrotask(() =>
+      activity.call(
+        this,
+        {
+          ...payload,
+          cwd: payload.session_id === 'switch' ? f.excluded : f.directory,
+        },
+        policy,
+      ),
+    );
+    return result;
+  });
+  const forwarded = [];
+  const server = await startRelay({
+    configPath: f.configPath,
+    port: 0,
+    forward: async (_url, init) => {
+      if (init.method === 'GET')
+        return Response.json({ enabled: true, repositories: ['github.com/org/two'] });
+      forwarded.push({
+        remote: init.headers['x-harmonie-repository'],
+        body: JSON.parse(init.body),
+      });
+      return new Response('{}');
+    },
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  for (const [id, cwd] of [
+    ['switch', f.allowed],
+    ['remove', f.excluded],
+  ]) {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/activity`, {
+      method: 'POST',
+      body: JSON.stringify({ event: 'session_start', provider: 'codex', session_id: id, cwd }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    await server.flushTelemetry();
+  }
+  assert.equal(forwarded.length, 1, 'the first repository remains centrally denied');
+  assert.equal(forwarded[0].body.session_id, 'remove');
+  assert.equal(forwarded[0].remote, 'github.com/org/two');
+});
+
+test('saved sessions survive restart only under the original credential', async (t) => {
+  const f = await fixture(t);
+  const forwarded = [];
+  const forward = async (_url, init) => {
+    if (init.method === 'GET') return Response.json({ enabled: false, repositories: [] });
+    forwarded.push(JSON.parse(init.body));
+    return new Response('{}');
+  };
+  let server = await startRelay({ configPath: f.configPath, port: 0, token: 'original', forward });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const post = async (path, body) => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    await response.json();
+    await server.flushTelemetry();
+  };
+  await post('/activity', {
+    event: 'session_start',
+    provider: 'codex',
+    session_id: 'bound',
+    cwd: f.allowed,
+  });
+  await new Promise((resolve) => server.close(resolve));
+  server = await startRelay({ configPath: f.configPath, port: 0, token: 'original', forward });
+  await post('/v1/logs', logs(record('bound')));
+  assert.equal(forwarded.length, 2, 'the original credential restores its session');
+  await new Promise((resolve) => server.close(resolve));
+  server = await startRelay({ configPath: f.configPath, port: 0, token: 'replacement', forward });
+  await post('/v1/logs', logs(record('bound')));
+  assert.equal(forwarded.length, 2, 'replacement credentials need a fresh identifying hook');
+});
+
 test('empty, removed, invalid and missing configuration fail closed without an upstream request', async (t) => {
   const f = await fixture(t);
   let requests = 0;
   const server = await startRelay({
     configPath: f.configPath,
     port: 0,
-    forward: async () => {
+    forward: async (_url, init) => {
+      if (init.method === 'GET') return Response.json({ enabled: false, repositories: [] });
       requests++;
       return new Response('{}');
     },
@@ -210,6 +306,7 @@ test('empty, removed, invalid and missing configuration fail closed without an u
   async function post(path, body) {
     const response = await fetch(url + path, { method: 'POST', body: JSON.stringify(body) });
     await response.json();
+    await server.flushTelemetry();
     return response.status;
   }
   const hook = {

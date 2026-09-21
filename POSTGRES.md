@@ -96,6 +96,12 @@ using the configured credentials; a Docker volume alone is not a backup.
 Legacy Brain analyses retain their recorded tokens in their analysis cards. They
 are not backfilled as new call-level accounting events because the original
 response identities and costs are missing.
+An operator can backfill a separate `legacyCostEstimate` on successful aggregate-only
+archives using the recorded token totals and explicitly configured uncached rates.
+Their cards display `cache unknown`; these estimates do not create synthetic calls
+or contribute to call-level history totals. Archives without usable token counts
+remain unknown. Existing call records can be repriced together with their matching
+activity and history rows while Brain is stopped, preserving identities and usage.
 The current preview may use `BRAIN_SYNC_ENABLED=0` to inspect migrated data without
 automatically resuming memory synchronization. Normal startup leaves it enabled.
 

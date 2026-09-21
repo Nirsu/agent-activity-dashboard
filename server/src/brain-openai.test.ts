@@ -54,6 +54,54 @@ test('OpenAI sends a strict structured request and preserves response usage', as
   );
 });
 
+test('OpenAI reads final JSON separately from preliminary commentary', async (t) => {
+  const client = new OpenAIClient(options);
+  t.after(() => client.close());
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({
+      ...payload,
+      output: [
+        { type: 'reasoning', summary: [] },
+        {
+          type: 'message',
+          phase: 'commentary',
+          content: [{ type: 'output_text', text: '{"requests":[]}' }],
+        },
+        {
+          type: 'message',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: JSON.stringify(value) }],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual((await client.call('reader', '', {}, schema)).value, value);
+});
+
+test('OpenAI never accepts commentary as a final answer or masks a final refusal', async (t) => {
+  const client = new OpenAIClient(options);
+  t.after(() => client.close());
+  const commentary = {
+    type: 'message',
+    phase: 'commentary',
+    content: [{ type: 'output_text', text: JSON.stringify(value) }],
+  };
+  let output: unknown[] = [commentary];
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ ...payload, output }));
+  assert.equal((await client.call('reader', '', {}, schema)).value, null);
+  output = [
+    commentary,
+    {
+      type: 'message',
+      phase: 'final_answer',
+      content: [{ type: 'refusal', refusal: privateDetail }],
+    },
+  ];
+  const refused = await client.call('reader', '', {}, schema);
+  assert.equal(refused.value, null);
+  assert.doesNotMatch(JSON.stringify(refused), /Private provider detail/);
+});
+
 for (const [name, response] of [
   ['incomplete', { ...payload, status: 'incomplete' }],
   [

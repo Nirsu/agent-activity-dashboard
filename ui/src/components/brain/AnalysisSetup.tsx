@@ -43,155 +43,158 @@ export function AnalysisSetup({
       ? 'Please wait…'
       : 'Run AI analysis';
   return (
-    <>
-      <form
-        id="brain-analysis-setup"
-        className="brain-agents-setup"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onStart();
-        }}
+    <section className="brain-agents-setup" aria-label="Project and manual analysis">
+      <label htmlFor="brain-agent-project">Project to check</label>
+      <select
+        id="brain-agent-project"
+        value={projectId}
+        disabled={busy || !state.projects.length}
+        onChange={(event) => onSelectProject(event.target.value)}
       >
-        <div className="brain-agents-setup-heading">
-          <h2>Check a change</h2>
-          <p>Choose a project and describe the feature you want Brain to examine.</p>
-        </div>
-        {!state.configured && (
-          <p className="brain-warning">
-            {state.reason || 'Configure model access on the server to run an analysis.'}{' '}
-            <a href="#brain/settings">Open settings</a>
+        {!state.projects.length && <option value="">No projects configured</option>}
+        {state.projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.name}
+          </option>
+        ))}
+      </select>
+      {project && (
+        <details className="brain-agents-scope">
+          <summary>Project scope and sources</summary>
+          <p>{project.scope}</p>
+          <p>
+            {project.specifications} configured Git specification
+            {project.specifications !== 1 ? 's' : ''}. Approved Notion pages and shared references
+            are retrieved from <a href="#brain/memory">Memory</a>.
           </p>
-        )}
-        <label htmlFor="brain-agent-project">Project to check</label>
-        <select
-          id="brain-agent-project"
-          value={projectId}
-          disabled={busy || !state.projects.length}
-          onChange={(event) => onSelectProject(event.target.value)}
-        >
-          {!state.projects.length && <option value="">No projects configured</option>}
-          {state.projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-        {project && (
-          <details className="brain-agents-scope">
-            <summary>Project scope and sources</summary>
-            <p>{project.scope}</p>
-            <p>
-              {project.specifications} configured Git specification
-              {project.specifications !== 1 ? 's' : ''}. Approved Notion pages and shared references
-              are retrieved from <a href="#brain/memory">Memory</a>.
-            </p>
-            <strong>Allowed code files and folders ({project.codePaths.length})</strong>
-            <ul>
-              {project.codePaths.map((path) => (
-                <li key={path}>
-                  <code>{path}</code>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-        <label htmlFor="brain-agent-ticket">Work ticket (optional)</label>
-        <input
-          id="brain-agent-ticket"
-          value={ticket}
-          onChange={(event) => onTicketChange?.(event.target.value)}
-          placeholder="HM-123"
-          maxLength={80}
-          disabled={locked}
-          pattern="[A-Z][A-Z0-9]+-[0-9]+"
-        />
-        <p className="brain-agents-help">
-          Use the same ticket as the coding session to connect its activity and analysis.
-        </p>
-        <label htmlFor="brain-agent-feature">Feature or change to check (optional)</label>
-        <textarea
-          id="brain-agent-feature"
-          rows={3}
-          value={feature}
-          maxLength={brainConfig.analysis.maxTextCharacters}
-          disabled={locked}
-          aria-describedby="brain-agent-feature-help"
-          onChange={(event) => onFeatureChange(event.target.value)}
-          placeholder="For example: Preserve export dates in the activity report."
-        />
-        <p className="brain-agents-help" id="brain-agent-feature-help">
-          The description guides the analysis. To restrict code to changed files, add a base commit
-          below. Uncommitted edits are not included.
-        </p>
-        <details className="brain-agents-revisions">
-          <summary>Commit range (optional) · defaults to the latest local commit</summary>
-          <p className="brain-agents-help">
-            Commits must exist in the server checkout. Leave the base empty to inspect the
-            configured code scope.
-          </p>
-          <div>
-            <label htmlFor="brain-agent-commit">Commit to review</label>
-            <input
-              id="brain-agent-commit"
-              value={commit}
-              onChange={(event) => onCommitChange(event.target.value)}
-              placeholder="Latest local commit (HEAD)"
-              pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}"
-              title="Use a full 40- or 64-character Git commit ID."
-              maxLength={64}
-              disabled={locked}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <label htmlFor="brain-agent-base">Compare changes since</label>
-            <input
-              id="brain-agent-base"
-              value={baseCommit}
-              onChange={(event) => onBaseCommitChange(event.target.value)}
-              placeholder="Full base commit ID"
-              pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}"
-              title="Use a full 40- or 64-character Git commit ID."
-              maxLength={64}
-              disabled={locked}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
+          <strong>Allowed code files and folders ({project.codePaths.length})</strong>
+          <ul>
+            {project.codePaths.map((path) => (
+              <li key={path}>
+                <code>{path}</code>
+              </li>
+            ))}
+          </ul>
         </details>
-        {state.activeRunId && (
-          <div className="brain-agents-active" role="status">
-            <span>
-              An analysis is running{activeRun ? ` for ${activeRun.projectName}` : ''}. Its progress
-              updates automatically.
-            </span>
-            <button
-              className="brain-button"
-              type="button"
-              onClick={onShowActiveRun}
-              disabled={!activeRun}
-            >
-              View running analysis
-            </button>
-          </div>
-        )}
-        <div className="brain-agents-launch">
-          <small>
-            {state.configured && (
-              <strong>
-                {state.model} · OpenAI API
-                <br />
-              </strong>
-            )}
-            Selected source excerpts are sent to the model. A human makes the final decision.
-          </small>
+      )}
+      {state.activeRunId && (
+        <div className="brain-agents-active" role="status">
+          <span>
+            An analysis is running{activeRun ? ` for ${activeRun.projectName}` : ''}. Its progress
+            updates automatically.
+          </span>
           <button
-            className="brain-button primary"
-            disabled={locked || !state.configured || !project}
+            className="brain-button"
+            type="button"
+            onClick={onShowActiveRun}
+            disabled={!activeRun}
           >
-            {launchLabel}
+            View running analysis
           </button>
         </div>
-      </form>
-    </>
+      )}
+      <details id="brain-analysis-setup" className="brain-agents-manual">
+        <summary>Run a manual analysis</summary>
+        <form
+          className="brain-agents-manual-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onStart();
+          }}
+        >
+          <p className="brain-agents-help">
+            Choose a commit to check against this project's approved references. Analyses submitted
+            by agents appear in the results below automatically.
+          </p>
+          {!state.configured && (
+            <p className="brain-warning">
+              {state.reason || 'Configure model access on the server to run an analysis.'}{' '}
+              <a href="#brain/settings">Open settings</a>
+            </p>
+          )}
+          <div className="brain-agents-revisions">
+            <div>
+              <label htmlFor="brain-agent-commit">Commit to review</label>
+              <input
+                id="brain-agent-commit"
+                value={commit}
+                onChange={(event) => onCommitChange(event.target.value)}
+                placeholder="Latest server commit (HEAD)"
+                pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}"
+                title="Use a full 40- or 64-character Git commit ID."
+                maxLength={64}
+                disabled={locked}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <label htmlFor="brain-agent-base">Compare changes since (optional)</label>
+              <input
+                id="brain-agent-base"
+                value={baseCommit}
+                onChange={(event) => onBaseCommitChange(event.target.value)}
+                placeholder="Full base commit ID"
+                pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}"
+                title="Use a full 40- or 64-character Git commit ID."
+                maxLength={64}
+                disabled={locked}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <p className="brain-agents-help">
+              Commits must exist in the project's server repository. Leave the commit empty to use
+              its HEAD. Add a base commit to restrict the review to changed files in the allowed
+              scope; otherwise, the full configured scope is examined. Uncommitted edits are not
+              included.
+            </p>
+          </div>
+          <label htmlFor="brain-agent-ticket">Work ticket (optional)</label>
+          <input
+            id="brain-agent-ticket"
+            value={ticket}
+            onChange={(event) => onTicketChange?.(event.target.value)}
+            placeholder="HM-123"
+            maxLength={80}
+            disabled={locked}
+            pattern="[A-Z][A-Z0-9]+-[0-9]+"
+          />
+          <p className="brain-agents-help">
+            Use the same ticket as the coding session to connect its activity and analysis.
+          </p>
+          <label htmlFor="brain-agent-feature">Feature or change to check (optional)</label>
+          <textarea
+            id="brain-agent-feature"
+            rows={3}
+            value={feature}
+            maxLength={brainConfig.analysis.maxTextCharacters}
+            disabled={locked}
+            aria-describedby="brain-agent-feature-help"
+            onChange={(event) => onFeatureChange(event.target.value)}
+            placeholder="For example: Preserve export dates in the activity report."
+          />
+          <p className="brain-agents-help" id="brain-agent-feature-help">
+            Optionally focus the review on a requirement or expected behavior within the selected
+            code scope.
+          </p>
+          <div className="brain-agents-launch">
+            <small>
+              {state.configured && (
+                <strong>
+                  {state.model} · OpenAI API
+                  <br />
+                </strong>
+              )}
+              Selected source excerpts are sent to the model. A human makes the final decision.
+            </small>
+            <button
+              className="brain-button primary"
+              disabled={locked || !state.configured || !project}
+            >
+              {launchLabel}
+            </button>
+          </div>
+        </form>
+      </details>
+    </section>
   );
 }

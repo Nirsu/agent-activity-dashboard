@@ -174,12 +174,13 @@ export function buildProjectGraph(snapshot: ProjectSnapshot): MemoryGraph {
   return graph;
 }
 
-export async function addCurrentMemory(graph: MemoryGraph, memory: GraphMemory) {
+export async function addCurrentMemory(graph: MemoryGraph, memory: GraphMemory, concepts = true) {
   const projectId = graph.scope.id.startsWith('project:')
     ? graph.scope.id.slice('project:'.length)
     : undefined;
   const registrations = memory.store
     .sources()
+    .filter((source) => source.approval !== 'withdrawn' && source.kind !== 'review')
     .filter((source) =>
       projectId ? source.shared || source.projectIds.includes(projectId) : source.shared,
     );
@@ -238,7 +239,7 @@ export async function addCurrentMemory(graph: MemoryGraph, memory: GraphMemory) 
   }
   graph.scope.description +=
     ' Current registered sources are shown with their synchronization status. Extracted concepts are not approved requirements.';
-  if (indexed.size) {
+  if (concepts && indexed.size) {
     await addExtractedGraph(graph, memory, indexed);
   }
   limitGraph(graph);
@@ -349,14 +350,18 @@ export function registerMemoryGraph(
   memory: GraphMemory,
   agentsService: Pick<BrainAgents, 'graphSnapshots'>,
 ) {
-  app.get<{ Querystring: { scope?: string } }>(
+  app.get<{ Querystring: { scope?: string; view?: 'knowledge' | 'analysis'; concepts?: boolean } }>(
     '/api/brain/graph',
     {
       schema: {
         querystring: {
           type: 'object',
           additionalProperties: false,
-          properties: { scope: { type: 'string', pattern: '^(shared|project:[A-Za-z0-9_-]+)$' } },
+          properties: {
+            scope: { type: 'string', pattern: '^(shared|project:[A-Za-z0-9_-]+)$' },
+            view: { type: 'string', enum: ['knowledge', 'analysis'] },
+            concepts: { type: 'boolean' },
+          },
         },
       },
     },
@@ -374,13 +379,23 @@ export function registerMemoryGraph(
         if (!project) {
           fail('Graph project is not registered.', 404);
         }
-        graph = buildProjectGraph(project);
+        graph = buildProjectGraph(
+          request.query.view === 'analysis' ? project : { ...project, run: undefined },
+        );
+        if (request.query.view !== 'analysis') {
+          graph.scope.description =
+            'Current knowledge sources and their page hierarchy. Code evidence is available in the analysis view.';
+        }
       }
       graph.scopes = [
         ...projects.map((project) => ({ id: `project:${project.id}`, label: project.name })),
         { id: 'shared', label: 'Shared memory' },
       ];
-      return addCurrentMemory(graph, memory);
+      if (request.query.view === 'analysis') {
+        limitGraph(graph);
+        return graph;
+      }
+      return addCurrentMemory(graph, memory, request.query.concepts === true);
     },
   );
 }

@@ -6,6 +6,29 @@ import test from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { setup, validateUrl, codexTelemetry } from './setup.mjs';
 
+test('individual tokens configure both clients without storing secrets and migrate existing Brain entries idempotently', async (t) => {
+  const paths = await fixture(t);
+  await setup({ ...paths, apply: true });
+  await setup({ ...paths, url: 'https://agents.example.test', individualToken: true, apply: true });
+  const codex = await readFile(join(paths.codexHome, 'config.toml'), 'utf8');
+  assert.match(codex, /bearer_token_env_var = "HARMONIE_TOKEN"/);
+  assert.match(codex, /https:\/\/agents.example.test\/api\/brain\/mcp/);
+  const claudePath = join(paths.home, '.claude.json');
+  const claude = JSON.parse(await readFile(claudePath, 'utf8'));
+  assert.deepEqual(claude.mcpServers['harmony-brain'], {
+    type: 'http',
+    url: 'https://agents.example.test/api/brain/mcp',
+    headers: { Authorization: 'Bearer ${HARMONIE_TOKEN}' },
+  });
+  const rerun = await setup({
+    ...paths,
+    url: 'https://agents.example.test',
+    individualToken: true,
+    apply: true,
+  });
+  assert.equal(rerun.changedFiles.length, 0);
+});
+
 test('installed bridges preserve parent and child identities without forwarding content', async (t) => {
   const paths = await fixture(t);
   await setup({ ...paths, apply: true });

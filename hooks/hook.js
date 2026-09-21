@@ -173,14 +173,18 @@ async function main() {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    await fetch(`${DASHBOARD_URL}/activity`, {
+    const response = await fetch(`${DASHBOARD_URL}/activity`, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
+    await response.body?.cancel();
+    if (!response.ok) {
+      console.error(`Harmonie telemetry was not accepted (HTTP ${response.status}). Check the local relay.`);
+    }
   } catch {
-    /* dashboard down — ignore, never block the coding agent */
+    console.error('Harmonie telemetry delivery was not confirmed. Check the local relay.');
   } finally {
     clearTimeout(t);
   }

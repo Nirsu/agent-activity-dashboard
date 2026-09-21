@@ -33,6 +33,20 @@ export const readingSchema = recordSchema({
 });
 
 export const comparisonSchema = recordSchema({
+  requests: arraySchema({
+    anyOf: [
+      recordSchema({
+        action: { type: 'string', enum: ['read'] },
+        path: stringSchema,
+        startLine: { type: 'integer' },
+        endLine: { type: 'integer' },
+      }),
+      recordSchema({
+        action: { type: 'string', enum: ['search'] },
+        query: stringSchema,
+      }),
+    ],
+  }),
   checks: arraySchema(
     recordSchema({
       requirementId: stringSchema,

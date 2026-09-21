@@ -1,5 +1,10 @@
 # Developer setup
 
+For [individual workstation credentials](../ACCOUNTS.md), provide `HARMONIE_TOKEN`
+to the clients' environment and add `--individual-token` during setup. The same
+token authenticates telemetry and Brain MCP. Separate ingest/viewer instructions
+below describe legacy shared-key mode.
+
 Install Node.js 20 or later and the clients you use. Run this once per developer
 account and machine, not once per repository. The dashboard must be reachable.
 
@@ -7,7 +12,7 @@ account and machine, not once per repository. The dashboard must be reachable.
 npm run agents:setup -- --url http://127.0.0.1:4318
 npm run agents:setup -- --url http://127.0.0.1:4318 --apply
 npm run agents:projects -- --allow /absolute/path/to/project
-npm run agents:relay
+node fleet/ensure-relay.mjs
 ```
 
 The first command previews file paths. The second installs Codex and Claude Code
@@ -64,18 +69,53 @@ Git worktrees of a selected repository are included. A different clone, a nested
 repository or another repository with the same name requires its own selection.
 Do not select a parent directory expecting all its repositories to be enabled.
 
-Keep `npm run agents:relay` running on each developer's machine. It needs only Node
-and Git, and can also run from the installed `~/.config/harmonie-agents/relay.mjs`
-without keeping this checkout. Use `--relay-port` during setup if 14318 is occupied.
-Restart the relay and clients after changing that port. For a shared authenticated
+Installed hooks start the relay automatically in the background before sending
+activity. A later hook restarts it if it has stopped; a terminal does not need to
+stay open. `node fleet/ensure-relay.mjs` starts it immediately and reuses an existing
+compatible relay. `npm run agents:relay` remains available for foreground diagnosis.
+The relay needs only Node and Git and can run from the installed
+`~/.config/harmonie-agents/relay.mjs` without this checkout.
+Use `--relay-port` during setup if 14318 is occupied.
+Restart the relay and clients after changing that port or upgrading an older relay.
+For a shared authenticated
 dashboard, provide its ingest token as `AAD_TOKEN` in the relay's environment;
-MCP authentication remains separate. IT can manage this relay as a per-user service.
+MCP authentication remains separate. An automatically started relay inherits this
+environment from the agent client. IT can also manage it as a per-user service.
 
 The relay authorizes a session from a lifecycle hook's working directory. It
 filters OTLP batches per session and provider; unlinked or unidentified exports
 are dropped locally. Keep hooks trusted and session IDs enabled in Claude metrics.
-After restarting the relay, a new hook must identify each session before its
-telemetry can resume. Events already dropped are not replayed by the relay.
+The relay saves established session/repository associations for up to 24 hours,
+so restarting it with the same credential does not require another hook for those sessions. New or unknown
+sessions still require an identifying hook. Events never received by the relay
+cannot be recovered.
+
+## Delivery during outages
+
+The relay filters repositories and selects structural telemetry fields before
+writing a private local outbox next to `telemetry.json`. It acknowledges receipt
+only after the entry is saved, retries automatically, and deletes an entry only
+after dashboard acknowledgement. Hooks retain their event IDs and original
+timestamps during replay. Existing timestamped OTLP events retain their deduplication
+identity. Prompt bodies, commands, tool arguments/output and access tokens are
+excluded from queued data.
+
+Queue entries and saved session bindings are tied to a fingerprint of the relay's
+credential. Changing a token requires restarting the relay and identifying sessions
+with fresh hooks. Events created with a different credential remain queued until
+that original credential is restored or the entries expire; they do not block new
+events or inherit the replacement developer's identity. Flush the queue before a
+planned token rotation. Older queue entries without an identity fingerprint cannot
+be safely attributed and are retained without delivery until expiry. Flush an older
+relay before upgrading when possible. No bearer secret is stored in this fingerprint.
+
+The defaults in `relay-config.json` bound the queue to 64 MiB, 10,000 batches and
+24 hours. A removed repository or changed dashboard destination retires its pending
+entries rather than forwarding them elsewhere. Disk/capacity errors reject new
+events and produce a hook warning. `http://127.0.0.1:14318/healthz` reports pending
+batches, bytes, discarded entries and the latest delivery error, including HTTP 401.
+An empty queue does not prove every client emitted telemetry: disabled/untrusted
+hooks, an unavailable relay, unknown sessions and exhausted limits can still leave gaps.
 
 When upgrading from direct collection, rerun setup, review the changed hooks and
 restart **all** running Codex/Claude clients. Older processes can retain their
@@ -97,8 +137,8 @@ Register the project's paths and approved specifications in Brain first. These
 instructions tell agents when to use Brain; the MCP descriptions explain how to
 call it. Instructions are a workflow convention, not an enforced CI gate.
 
-The current dashboard registration covers only `hooks/hook.js`, not the entire
-application. Do not claim a full-project review from that limited registration.
+The `dashboard` Brain registration covers Harmony Brain and the Agent Activity
+Dashboard. Discover its current allowed paths through MCP.
 
 For a larger rollout, IT can distribute the same client configuration and bridge
 with endpoint management. Developers still need client authentication and the
@@ -139,9 +179,9 @@ enforcement of the developer's allowlist in this pilot.
    The installer's default MCP connection contains only a URL; a protected
    deployment also requires this authentication step. Existing MCP definitions
    are preserved, so check their URL when moving from localhost to the server.
-4. Start the installed relay and configure it as a per-user startup service with
-   your deployment tooling. The installer does not register an OS startup task.
-   Restart the agent clients and review the new or changed Codex hooks.
+4. Restart the agent clients and review the new or changed Codex hooks. The installed
+   hooks start the relay automatically. IT can additionally configure a per-user
+   service to keep it running before any agent client starts.
 
 After installation the setup checkout is no longer needed to manage projects.
 On Windows, the developer can run these commands from any terminal:
@@ -190,3 +230,10 @@ References: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
 [Claude hooks](https://code.claude.com/docs/en/hooks),
 [Claude telemetry](https://code.claude.com/docs/en/monitoring-usage),
 [Claude memory](https://code.claude.com/docs/en/memory).
+
+## Central repository authorization
+
+Administrators manage the shared Git repository allowlist in **Projects** on the
+dashboard. See [PROJECTS.md](../PROJECTS.md) for rollout and filtering behavior.
+Local clone selection remains required. Update and restart installed relays
+before enabling the central filter; version 3 sends normalized Git origin identity.

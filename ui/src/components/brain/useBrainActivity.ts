@@ -20,6 +20,7 @@ export interface BrainActivityRun {
   usageKnown?: boolean;
   costUsd?: number | null;
   knownCostUsd?: number;
+  costBasis?: 'calls' | 'legacy_uncached';
   activeRole?: string;
   callCount?: number | null;
   findingCount: number;

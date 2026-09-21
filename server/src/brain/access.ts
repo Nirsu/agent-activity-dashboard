@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import { brainConfig } from './config.js';
+import '../access/identity.js';
 
 export function isBrainCallback(request: { method: string; url: string }) {
   const path = request.url.split('?')[0];
@@ -16,7 +17,9 @@ export async function requireBrainAccess(request: FastifyRequest, reply: Fastify
   if (!request.url.startsWith('/api/brain') || isBrainCallback(request)) {
     return;
   }
-  if (config.viewerToken) {
+  if (request.accessPrincipal) {
+    // The outer authentication hook authorizes only the MCP transport for devices.
+  } else if (config.viewerToken) {
     const authorization = request.headers.authorization;
     const provided = authorization?.startsWith('Bearer ')
       ? authorization.slice(7)
@@ -49,6 +52,11 @@ export async function requireBrainAccess(request: FastifyRequest, reply: Fastify
 }
 
 export async function requireBrainAdmin(request: FastifyRequest, reply: FastifyReply) {
+  if (request.accessPrincipal) {
+    return reply
+      .code(403)
+      .send({ error: 'Workstation tokens cannot perform human administration.' });
+  }
   const required = process.env.BRAIN_ADMIN_TOKEN;
   if (required) {
     const provided = request.headers['x-brain-admin-token'];

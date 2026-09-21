@@ -63,6 +63,9 @@ test('Brain board links work and reviews while keeping unknown usage distinct fr
   assert.doesNotMatch(zero, /Cost unavailable|Tokens unavailable/);
   assert.match(zero, /estimated/);
   assert.match(zero, /0 tokens/);
+  const legacy = render([{ ...run, costUsd: 0.004, costBasis: 'legacy_uncached' }]);
+  assert.match(legacy, /\$0\.0040 estimated.*cache unknown/);
+  assert.match(legacy, /Excluded from call-level usage totals/);
   const failed = render([{ ...run, status: 'failed', pendingReviewCount: 0, differenceCount: 0 }]);
   assert.match(failed, /No conclusion/);
   assert.doesNotMatch(failed, /0 differences/);

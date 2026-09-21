@@ -9,6 +9,7 @@ import { estimateModelCost } from '../../model-cost.js';
 import type { Source } from '../sources.js';
 import type { SourceExcerpt } from '../memory/types.js';
 import { OpenAIClient } from './openai.js';
+import { CodeReader } from './code-reader.js';
 import { captureProjectSources, readProjects } from './projects.js';
 import { applySubmittedFiles, submissionInfo, validateSubmittedFiles } from './submissions.js';
 import { arbitrationSchema, comparisonSchema, readingSchema } from './schemas.js';
@@ -48,12 +49,35 @@ function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function summarizeRunCost(run: AnalysisRun) {
+  const calls = run.calls ?? [];
+  const legacy = calls.length === 0 ? run.legacyCostEstimate : undefined;
+  const knownCostUsd = calls.reduce((sum, call) => sum + (call.costUsd ?? 0), 0);
+  const costUsd =
+    calls.length && calls.every((call) => call.costUsd != null)
+      ? knownCostUsd
+      : (legacy?.costUsd ?? null);
+  return {
+    costUsd,
+    knownCostUsd: legacy?.costUsd ?? knownCostUsd,
+    costStatus: costUsd === null ? 'unknown' : 'estimated',
+    costBasis: legacy ? 'legacy_uncached' : 'calls',
+  };
+}
+
 function validateCorrelation(value?: BrainCorrelation): BrainCorrelation | undefined {
   if (!value) {
     return undefined;
   }
   const result: BrainCorrelation = {};
-  for (const key of ['workItemId', 'ticket', 'originSessionId', 'parentRunId'] as const) {
+  for (const key of [
+    'workItemId',
+    'ticket',
+    'originSessionId',
+    'parentRunId',
+    'developerId',
+    'workstationId',
+  ] as const) {
     if (value[key] !== undefined) {
       const text = requireText(value[key], brainConfig.analysis.maxCorrelationCharacters).trim();
       if (/[\u0000-\u001f]/.test(text)) {
@@ -359,15 +383,7 @@ export class BrainAgents {
         ...run.correlation,
         usage: run.usage,
         usageKnown: Boolean(run.calls?.length) && run.calls!.every((call) => call.usageKnown),
-        costUsd:
-          run.calls?.length && run.calls.every((call) => call.costUsd !== null)
-            ? run.calls.reduce((sum, call) => sum + call.costUsd!, 0)
-            : null,
-        knownCostUsd: run.calls?.reduce((sum, call) => sum + (call.costUsd ?? 0), 0) ?? 0,
-        costStatus:
-          run.calls?.length && run.calls.every((call) => call.costUsd !== null)
-            ? 'estimated'
-            : 'unknown',
+        ...summarizeRunCost(run),
         activeRole: run.calls?.find((call) => call.status === 'running')?.role,
         callCount: run.calls?.length ?? null,
         findingCount: run.findings.length,
@@ -523,7 +539,7 @@ export class BrainAgents {
       fail('Project is not registered.', 404);
     }
     const capture = { commit, sources: [] as Source[], changedFiles: [] as string[] };
-    await captureProjectSources(capture, project, { specificationsOnly: true });
+    await captureProjectSources(capture, project);
     const retrieved = await this.memory.retrieve(
       project,
       [project.name, project.scope, feature].join('\n'),
@@ -779,21 +795,19 @@ export class BrainAgents {
 
   private async execute(run: AnalysisRun, project: Project, submission?: SubmittedFile[]) {
     try {
-      await captureProjectSources(run, project, {
-        submittedPaths: submission?.map((file) => file.path),
-      });
+      const files = await captureProjectSources(run, project);
       if (submission) {
         applySubmittedFiles(run, project, submission);
       }
       await this.progress(run, 'Retrieving project and shared memory');
-      const code = run.sources.filter((source) => source.status === 'observed');
+      const submittedCode = run.sources.filter((source) => source.status === 'observed');
       const capturedSpecifications = run.sources.filter((source) => source.status === 'published');
       const query = [project.name, project.scope, run.feature, ...run.changedFiles]
         .filter(Boolean)
         .join('\n');
       const retrieved = await this.memory!.retrieve(project, query, capturedSpecifications);
       const { sources, ...retrieval } = retrieved;
-      run.sources = [...sources, ...code];
+      run.sources = [...sources, ...submittedCode];
       run.retrieval = retrieval;
       const memoryInput = formatSources(sources, retrieved.excerpts);
       const selectedBytes = memoryInput.reduce(
@@ -803,8 +817,7 @@ export class BrainAgents {
       );
       if (
         run.sources.length > brainConfig.analysis.maxSources ||
-        code.reduce((size, source) => size + Buffer.byteLength(source.content), selectedBytes) >
-          brainConfig.analysis.maxSourceBytes
+        selectedBytes > brainConfig.analysis.maxSourceBytes
       ) {
         fail('Retrieved scope is too large: narrow the feature or selected source pages.');
       }
@@ -858,23 +871,17 @@ export class BrainAgents {
           `No applicable requirements extracted: ${requireText(reading.summary)} No conclusion about the code.`,
         );
       } else {
-        const comparison = await this.invoke(
-          run,
-          'comparison',
-          comparisonPrompt,
-          {
-            project: projectScope,
-            requirements: run.requirements,
-            code: formatSources(code),
-            commit: run.commit,
-            submission: run.submission,
-            baseCommit: run.baseCommit,
-            changedFiles: run.changedFiles,
-            contextualReviews,
-          },
-          comparisonSchema,
-        );
-        const checks = parseComparisonChecks(comparison.checks, code, run.requirements);
+        const reader = new CodeReader(run, project, files, submission);
+        await reader.prime();
+        const checks = await this.compareCode(run, reader, comparisonPrompt, {
+          project: projectScope,
+          requirements: run.requirements,
+          commit: run.commit,
+          submission: run.submission,
+          baseCommit: run.baseCommit,
+          changedFiles: run.changedFiles,
+          contextualReviews,
+        });
 
         const arbitration = await this.invoke(
           run,
@@ -907,5 +914,45 @@ export class BrainAgents {
       await this.saveRun(run);
       await this.activity(run, 'brain_analysis', 'failed', `${run.id}:failed`);
     }
+  }
+
+  private async compareCode(
+    run: AnalysisRun,
+    reader: CodeReader,
+    prompt: string,
+    input: Record<string, unknown>,
+  ) {
+    for (let round = 0; round <= brainConfig.codeRetrieval.maxRounds; round += 1) {
+      const comparison = await this.invoke(
+        run,
+        'comparison',
+        prompt,
+        {
+          ...input,
+          code: formatSources(reader.sources, run.codeRetrieval!.excerpts),
+          repository: reader.context,
+          retrievalRoundsRemaining: brainConfig.codeRetrieval.maxRounds - round,
+        },
+        comparisonSchema,
+      );
+      // Older deterministic callers may omit requests; provider outputs require the field.
+      const requests = comparison.requests ?? [];
+      if (Array.isArray(requests) && requests.length === 0) {
+        return parseComparisonChecks(
+          comparison.checks,
+          reader.sources,
+          run.requirements,
+          run.codeRetrieval!.excerpts,
+        );
+      }
+      if (round === brainConfig.codeRetrieval.maxRounds) {
+        fail('Code retrieval limit reached without a final comparison. No validated results.');
+      }
+      await this.requireCurrentContext(run);
+      await this.progress(run, 'Reading requested code evidence');
+      await reader.requests(requests);
+      await this.saveRun(run);
+    }
+    throw new Error('Code comparison did not complete.');
   }
 }

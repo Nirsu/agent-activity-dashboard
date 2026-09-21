@@ -20,7 +20,7 @@ export function validateSubmittedFiles(input: unknown, project: Project): Submit
     }
     if (typeof entry.content === 'string') {
       bytes += Buffer.byteLength(entry.content);
-      if (entry.content.includes('\0') || bytes > brainConfig.analysis.maxSourceBytes) {
+      if (entry.content.includes('\0') || bytes > brainConfig.codeRetrieval.maxSubmissionBytes) {
         fail('Submitted code is too large or binary. Narrow the change.');
       }
     }
@@ -61,11 +61,9 @@ export function applySubmittedFiles(run: AnalysisRun, project: Project, files: S
     run.sources
       .filter((source) => source.status === 'observed')
       .reduce((total, source) => total + Buffer.byteLength(source.content), 0) >
-      brainConfig.analysis.maxSourceBytes
+      brainConfig.codeRetrieval.maxSubmissionBytes
   ) {
-    fail(
-      'The submitted change and baseline context exceed the analysis budget. Narrow the project scope.',
-    );
+    fail('The submitted snapshot exceeds the capture budget. Narrow the submitted change.');
   }
   run.submission = submission;
   run.changedFiles = paths;

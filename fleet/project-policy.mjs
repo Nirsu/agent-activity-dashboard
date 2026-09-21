@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+const { normalizeRepositoryRemote } = createRequire(import.meta.url)('./repository-url.cjs');
 
 export const defaultRelayPort = 14318;
 export const defaultConfigPath = () =>
@@ -88,4 +90,20 @@ export function selectedRepository(cwd, projects) {
   const current = repositoryAt(cwd);
   if (!current) return undefined;
   return projects.find((path) => repositoryAt(path)?.identity === current.identity);
+}
+
+export function repositoryRemote(path) {
+  try {
+    return normalizeRepositoryRemote(
+      execFileSync('git', ['remote', 'get-url', 'origin'], {
+        cwd: path,
+        encoding: 'utf8',
+        timeout: 1500,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim(),
+    );
+  } catch {
+    return undefined;
+  }
 }

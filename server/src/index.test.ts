@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test, { after } from 'node:test';
+import { gzipSync } from 'node:zlib';
+import { brainConfig } from './brain/config.js';
 
 const directory = await mkdtemp(resolve(tmpdir(), 'aad-agent-routes-'));
 Object.assign(process.env, {
@@ -19,6 +21,29 @@ Object.assign(process.env, {
 });
 
 const { buildApp } = await import('./index.js');
+
+test('replayed hook events keep their original time and stable ID', async () => {
+  const app = await buildApp();
+  try {
+    const timestamp = Date.now() - 60000;
+    const payload = {
+      event: 'stop',
+      provider: 'codex',
+      session_id: 'offline-task',
+      event_id: 'offline-event',
+      timestamp,
+    };
+    await app.inject({ method: 'POST', url: '/activity', payload });
+    await app.inject({ method: 'POST', url: '/activity', payload });
+    const events = (await app.inject('/api/state'))
+      .json()
+      .recentEvents.filter((event: { id: string }) => event.id === 'offline-event');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].ts, timestamp);
+  } finally {
+    await app.close();
+  }
+});
 
 after(async () => {
   await rm(directory, { recursive: true, force: true });
@@ -105,6 +130,84 @@ test('agent API preflight permits local browsers and rejects untrusted origins',
     });
     assert.equal(untrusted.statusCode, 403);
     assert.equal(untrusted.headers['access-control-allow-origin'], undefined);
+  } finally {
+    await app.close();
+  }
+});
+
+test('untrusted browser requests cannot read state or inject activity without a preflight', async () => {
+  const app = await buildApp();
+  try {
+    for (const origin of ['https://attacker.example', 'null']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/activity',
+        headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+        payload: JSON.stringify({
+          event: 'session_start',
+          provider: 'codex',
+          session_id: 'cross-origin',
+        }),
+      });
+      assert.equal(response.statusCode, 403);
+      assert.equal((await app.inject({ url: '/api/state', headers: { origin } })).statusCode, 403);
+    }
+    const state = (await app.inject('/api/state')).json();
+    assert.ok(
+      !state.sessions.some((session: { sessionId: string }) =>
+        session.sessionId.includes('cross-origin'),
+      ),
+    );
+    assert.equal(
+      (await app.inject({ url: '/api/state', headers: { origin: 'http://127.0.0.1:5173' } }))
+        .statusCode,
+      200,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('gzip parsing enforces the decompressed route limit and rejects malformed bodies', async () => {
+  const app = await buildApp();
+  try {
+    for (const url of ['/v1/logs', '/api/brain/mcp']) {
+      const limit =
+        url === '/api/brain/mcp' ? brainConfig.mcp.maxRequestBytes : app.initialConfig.bodyLimit!;
+      const payload = gzipSync(Buffer.from(JSON.stringify({ padding: 'x'.repeat(limit) })));
+      assert.ok(payload.length < limit);
+      const response = await app.inject({
+        method: 'POST',
+        url,
+        headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        payload,
+      });
+      assert.equal(response.statusCode, 413, response.body);
+    }
+    for (const payload of [Buffer.from('invalid gzip'), gzipSync(Buffer.from('invalid json'))]) {
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/v1/logs',
+            headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+            payload,
+          })
+        ).statusCode,
+        400,
+      );
+    }
+    assert.equal(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/v1/logs',
+          headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+          payload: gzipSync(Buffer.from('{}')),
+        })
+      ).statusCode,
+      200,
+    );
   } finally {
     await app.close();
   }

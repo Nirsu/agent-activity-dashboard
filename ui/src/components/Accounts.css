@@ -1,0 +1,232 @@
+.access-page {
+  padding: 32px 24px 64px;
+  max-width: 1280px;
+  margin: auto;
+}
+.access-heading,
+.access-policy,
+.access-list-heading,
+.access-token {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.access-page h1 {
+  font-size: 30px;
+  margin: 8px 0;
+}
+.access-page h2 {
+  font-size: 17px;
+  margin: 0 0 12px;
+}
+.access-page p,
+.access-page small,
+.access-page time {
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.access-eyebrow {
+  color: var(--cyan);
+  font-size: 11px;
+  letter-spacing: 0.15em;
+}
+.access-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 24px;
+  margin-top: 20px;
+}
+.access-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 24px;
+}
+.access-summary > div {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: grid;
+  gap: 8px;
+}
+.access-summary strong {
+  font-size: 25px;
+}
+.access-summary span {
+  color: var(--text-dim);
+}
+.access-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: start;
+}
+.access-page button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+.access-page button:hover {
+  border-color: var(--accent);
+}
+.access-page button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.access-page button:focus-visible,
+.access-page input:focus-visible,
+.access-page textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.access-page label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+.access-page input,
+.access-page textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+.access-form {
+  display: grid;
+  gap: 18px;
+}
+.access-form fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.access-form .access-check {
+  display: flex;
+  align-items: center;
+  margin: 12px 0;
+}
+.access-check input {
+  width: auto;
+}
+.access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.access-page .access-danger {
+  color: var(--red);
+}
+.access-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.access-list button {
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.access-list button.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.access-list span {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.access-workstations {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 24px;
+}
+.access-token-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 100px auto;
+  gap: 12px;
+  align-items: end;
+  margin: 20px 0;
+}
+.access-token {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+.access-token > div {
+  display: grid;
+  gap: 6px;
+}
+.access-token span {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.access-page .access-error {
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 12px;
+  border-radius: 8px;
+}
+.access-secret {
+  border-color: var(--cyan);
+  position: sticky;
+  bottom: 16px;
+  box-shadow: var(--shadow);
+  max-height: 65vh;
+  overflow: auto;
+}
+.access-secret label {
+  margin: 12px 0;
+}
+.access-secret pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.access-audit summary {
+  cursor: pointer;
+}
+.access-audit > div {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.access-audit span {
+  color: var(--text-dim);
+}
+@media (max-width: 800px) {
+  .access-grid,
+  .access-summary {
+    grid-template-columns: 1fr;
+  }
+  .access-heading,
+  .access-policy {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .access-token-form {
+    grid-template-columns: 1fr;
+  }
+  .access-page {
+    padding: 20px 12px;
+  }
+}
+.access-form select {
+  background: var(--bg, #0b0e14);
+  border: 1px solid var(--border, #263142);
+  border-radius: 7px;
+  color: inherit;
+  padding: 10px 12px;
+  width: 100%;
+}
+.repository-remote {
+  overflow-wrap: anywhere;
+}

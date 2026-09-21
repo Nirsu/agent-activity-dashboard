@@ -1,5 +1,9 @@
 # Fleet deploy — central server, TLS, auth
 
+Use [Accounts and workstation access](../ACCOUNTS.md) to enroll developers without
+SSO. Require individual tokens after migrating their workstations. The shared keys
+below remain the browser/admin bootstrap and optional legacy transition mode.
+
 Goal: one dashboard the team's Codex and Claude Code clients point at. TLS is terminated by a
 **Caddy** reverse proxy (automatic HTTPS); the Node server stays plain HTTP behind
 it and enforces **token auth** in-app.
@@ -109,6 +113,21 @@ The local relay filters every developer's selection before sending activity to
 this shared server. An empty selection sends nothing. The older `bootstrap.sh`
 delegates to this installer for Claude; do not keep older direct hooks or shell
 exports alongside it. Hook payloads contain structural metadata, not prompt or tool content.
+
+### Where access tokens come from
+
+The dashboard administrator generates independent cryptographically random values
+(for example, 32 random bytes each) using their secret-management tooling. These
+are deployment bootstrap credentials. The Accounts page separately enrolls
+developers and issues their individual workstation tokens.
+Store them in the server's protected environment: `INGEST_TOKEN` authorizes telemetry,
+`VIEWER_TOKEN` authorizes viewers and Brain clients, and `BRAIN_ADMIN_TOKEN` authorizes
+Brain administration. Distribute only the appropriate credential through your secure
+deployment channel. Relays use `AAD_TOKEN=INGEST_TOKEN`; Brain clients use
+`BRAIN_ACCESS_TOKEN=VIEWER_TOKEN`. These shared service keys do not identify a person.
+
+Installed hooks automatically start the local relay, which persists filtered events
+and retries temporary dashboard outages. See [delivery limits and diagnostics](SETUP.md#delivery-during-outages).
 
 ## 5. Viewers
 

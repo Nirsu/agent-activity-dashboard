@@ -9,14 +9,22 @@ import { MetricLegend } from './components/MetricLegend';
 import { Trends } from './components/Trends';
 import { Brain } from './components/Brain';
 import { BrainActivityBoard } from './components/BrainActivityBoard';
+import { Accounts } from './components/Accounts';
+import { Projects } from './components/Projects';
 import type { AgentProvider } from './types';
 import { groupSessions } from '../../server/src/session-hierarchy';
 
-type View = 'board' | 'map' | 'trends' | 'brain';
+type View = 'board' | 'map' | 'trends' | 'brain' | 'accounts' | 'projects';
 type ProviderFilter = 'all' | AgentProvider;
 const viewFromHash = (): View => {
   const value = location.hash.slice(1).split('/')[0];
-  return value === 'brain' || value === 'map' || value === 'trends' ? value : 'board';
+  return value === 'brain' ||
+    value === 'map' ||
+    value === 'trends' ||
+    value === 'accounts' ||
+    value === 'projects'
+    ? value
+    : 'board';
 };
 
 export default function App() {
@@ -103,6 +111,18 @@ export default function App() {
             <button className={view === 'trends' ? 'on' : ''} onClick={() => navigate('trends')}>
               Trends
             </button>
+            <button
+              className={view === 'accounts' ? 'on' : ''}
+              onClick={() => navigate('accounts')}
+            >
+              Accounts
+            </button>
+            <button
+              className={view === 'projects' ? 'on' : ''}
+              onClick={() => navigate('projects')}
+            >
+              Projects
+            </button>
           </div>
           {(view === 'board' || view === 'map') && (
             <div className="provider-switch" role="group" aria-label="Filter by AI provider">
@@ -134,7 +154,11 @@ export default function App() {
         </div>
       </header>
 
-      {view === 'brain' ? (
+      {view === 'projects' ? (
+        <Projects />
+      ) : view === 'accounts' ? (
+        <Accounts />
+      ) : view === 'brain' ? (
         <Brain />
       ) : (
         <>

@@ -125,6 +125,7 @@ export function parseComparisonChecks(
   value: unknown,
   code: Source[],
   requirements: Requirement[],
+  excerpts?: SourceExcerpt[],
 ): ComparisonCheck[] {
   const checks = requireList(value).map<ComparisonCheck>((value) => {
     const check = requireObject(value);
@@ -136,7 +137,7 @@ export function parseComparisonChecks(
     const evidence = requireList(
       check.evidence,
       brainConfig.analysis.maxEvidencePerRequirement,
-    ).map((value) => parseCitation(value, code));
+    ).map((value) => parseCitation(value, code, excerpts));
     if (outcome !== 'insufficient' && evidence.length === 0) {
       fail('Result has no code evidence.');
     }

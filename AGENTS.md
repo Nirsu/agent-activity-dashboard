@@ -21,8 +21,10 @@ Preserve unrelated work and leave exceptions and approvals to a human.
 If Brain is unavailable, unconfigured, or does not cover the changed paths, report
 that limit and continue useful local work without claiming a Brain review passed.
 Do not expand project scope, send secrets, change specifications, or run a paid
-analysis on an unrelated feature to satisfy this rule. The current `dashboard`
-registration covers only safe tool summaries in `hooks/hook.js`.
+analysis on an unrelated feature to satisfy this rule. The `dashboard` registration
+covers Harmony Brain and the Agent Activity Dashboard, including server, UI,
+hooks, developer tooling and deployment files. Discover the current allowed paths
+through MCP rather than assuming a fixed single-file scope.
 
 # Readability
 

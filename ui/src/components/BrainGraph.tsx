@@ -16,9 +16,29 @@ export default function BrainGraph() {
       <header className="brain-graph-header">
         <div>
           <h1 id="memory-graph-title">Memory graph</h1>
-          <p>Follow connections from a concept back to its source.</p>
+          <p>Inspect current knowledge sources, or the evidence from the latest analysis.</p>
         </div>
         <div className="brain-graph-header-actions">
+          <label className="brain-graph-scope">
+            View
+            <select
+              value={brain.view}
+              onChange={(event) => brain.setView(event.target.value as 'knowledge' | 'analysis')}
+            >
+              <option value="knowledge">Knowledge sources</option>
+              <option value="analysis">Latest analysis</option>
+            </select>
+          </label>
+          {brain.view === 'knowledge' && (
+            <label>
+              <input
+                type="checkbox"
+                checked={brain.concepts}
+                onChange={(event) => brain.setConcepts(event.target.checked)}
+              />
+              Show extracted concepts
+            </label>
+          )}
           {brain.graph && (
             <label className="brain-graph-scope">
               Scope
@@ -52,7 +72,7 @@ export default function BrainGraph() {
       )}
       {currentGraph && brain.graph && (
         <GraphExplorer
-          key={brain.graph.scope.id}
+          key={`${brain.graph.scope.id}:${brain.view}:${brain.concepts}`}
           graph={brain.graph}
           openNode={brain.openNode}
           loadingSource={brain.loadingSource}

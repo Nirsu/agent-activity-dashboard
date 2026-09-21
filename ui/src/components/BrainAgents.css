@@ -28,19 +28,24 @@
   margin-top: 20px;
   scroll-margin-top: 20px;
 }
-.brain-agents-setup-heading p,
 .brain-agents .brain-agents-help {
   color: var(--text-dim);
   font-size: 12px;
   line-height: 1.7;
 }
-.brain-agents-setup-heading p {
-  margin-top: 5px;
+.brain-agents-manual-form {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+.brain-agents-manual {
+  scroll-margin-top: 20px;
 }
 .brain-agents .brain-agents-help {
   margin: 0 0 4px;
 }
-.brain-agents-setup > label {
+.brain-agents-setup > label,
+.brain-agents-manual-form > label {
   font-size: 13px;
   font-weight: 600;
 }

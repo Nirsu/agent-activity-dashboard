@@ -22,16 +22,20 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
   class TestSocket {
     static latest: TestSocket;
     onmessage?: (message: { data: string }) => void;
+    onopen?: () => void;
+    onclose?: () => void;
     constructor() {
       TestSocket.latest = this;
     }
     close() {}
   }
+  const browserEvents = new EventTarget();
   const replacements = {
     location: new URL('http://localhost/#board'),
-    localStorage: { getItem: () => null },
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addEventListener: browserEvents.addEventListener.bind(browserEvents),
+    removeEventListener: browserEvents.removeEventListener.bind(browserEvents),
+    dispatchEvent: browserEvents.dispatchEvent.bind(browserEvents),
     WebSocket: TestSocket,
     fetch: async (url: string) =>
       new Response(
@@ -284,4 +288,41 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
   await navigate('Board');
   assert.equal(providerButton('Codex').props['aria-pressed'], true);
   assert.equal(cost(), 6, 'returning to the board restores its provider selection');
+
+  await t.test(
+    'replacing dashboard credentials ignores late messages and closure from the old socket',
+    async () => {
+      const { useDashboard, setDashboardToken } = await vite!.ssrLoadModule('/src/api/ws.ts');
+      let current: { connected: boolean; sessions: SessionState[] };
+      function Probe() {
+        current = useDashboard();
+        return null;
+      }
+      await act(async () => renderer.unmount());
+      await act(async () => {
+        renderer = create(<Probe />);
+      });
+      const previous = TestSocket.latest;
+      await act(async () => previous.onopen?.());
+      await publish('snapshot', [claude]);
+      assert.equal(current!.sessions.length, 1);
+      await act(async () => setDashboardToken('replacement-viewer-token'));
+      assert.equal(current!.connected, false);
+      assert.equal(current!.sessions.length, 0);
+      assert.notEqual(TestSocket.latest, previous);
+      await act(async () => TestSocket.latest.onopen?.());
+      await publish('snapshot', [codex]);
+      await act(async () => {
+        previous.onmessage?.({
+          data: JSON.stringify({ type: 'sessions', sessions: [claude], aggregate: aggregate(2) }),
+        });
+        previous.onclose?.();
+      });
+      assert.equal(current!.connected, true);
+      assert.deepEqual(
+        current!.sessions.map((session) => session.provider),
+        ['codex'],
+      );
+    },
+  );
 });

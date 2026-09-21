@@ -487,7 +487,7 @@ async function fixture() {
   };
 }
 
-test('submitted replacements and deletions skip oversized baseline files and enforce the final context budget', async (t) => {
+test('submitted replacements and deletions skip oversized baseline files and leave unchanged code for on-demand reads', async (t) => {
   const f = await fixture();
   const model = mockModel({ outcome: 'insufficient' });
   const service = new BrainAgents({
@@ -518,7 +518,10 @@ test('submitted replacements and deletions skip oversized baseline files and enf
       result.sources.find((source) => source.path === 'src/main.ts')?.content,
       content ?? undefined,
     );
-    assert.ok(result.sources.some((source) => source.path === 'src/unchanged.ts'));
+    assert.equal(
+      result.sources.some((source) => source.path === 'src/unchanged.ts'),
+      false,
+    );
     assert.ok(result.sources.some((source) => source.path === 'docs/spec.md'));
     assert.equal(result.submission?.baselineCommit, baseline);
   }
@@ -531,9 +534,147 @@ test('submitted replacements and deletions skip oversized baseline files and enf
     [{ path: 'src/main.ts', content: 'x'.repeat(brainConfig.analysis.maxSourceBytes) }],
   );
   await service.wait();
-  assert.match((await service.detail(tooLarge.id)).error!, /baseline context exceed/);
-  assert.equal(model.calls.length, calls);
+  assert.equal((await service.detail(tooLarge.id)).status, 'succeeded');
+  assert.equal(
+    model.calls.length,
+    calls + 3,
+    'unread baseline files must not consume the evidence budget',
+  );
   assert.equal((await f.git('show', `${baseline}:src/main.ts`)).length, oversized.length);
+});
+
+test('large submitted snapshots send only bounded excerpts to the comparison model', async (t) => {
+  const f = await fixture();
+  const model = mockModel({ outcome: 'insufficient' });
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: model.call,
+  });
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const large = '// Unread context\n'.repeat(8000);
+  assert.ok(Buffer.byteLength(large) > brainConfig.analysis.maxSourceBytes);
+  const run = await service.start('dashboard', f.commit, undefined, 'Review submitted code', [
+    { path: 'src/main.ts', content: 'export const includeDate = true;' },
+    { path: 'src/large.ts', content: large },
+  ]);
+  await service.wait();
+  const result = await service.detail(run.id);
+  assert.equal(result.status, 'succeeded', result.error);
+  assert.equal(result.sources.find((source) => source.path === 'src/large.ts')?.content, large);
+  const comparison = model.calls.find((call) => call.role === 'comparison')!;
+  assert.equal(
+    comparison.input.code!.find((source) => source.path === 'src/large.ts')?.lines.length,
+    brainConfig.codeRetrieval.maxLinesPerRead,
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(comparison.input)) < brainConfig.analysis.maxSourceBytes,
+  );
+});
+
+test('comparison can search and read additional code with usage and provenance retained for every round', async (t) => {
+  const f = await fixture();
+  const model = mockModel();
+  let comparisons = 0;
+  const roles: string[] = [];
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: async (...args) => {
+      roles.push(args[0]);
+      if (args[0] === 'comparison') {
+        comparisons++;
+        if (comparisons === 1)
+          return {
+            value: { checks: [], requests: [{ action: 'search', query: 'format' }] },
+            inputTokens: 2,
+            outputTokens: 1,
+          };
+        if (comparisons === 2)
+          return {
+            value: {
+              checks: [],
+              requests: [{ action: 'read', path: 'src/unchanged.ts', startLine: 1, endLine: 2 }],
+            },
+            inputTokens: 2,
+            outputTokens: 1,
+          };
+      }
+      return model.call(...args);
+    },
+  });
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const run = await service.start('dashboard', f.commit, undefined, 'Check exports', [
+    { path: 'src/main.ts', content: 'export const includeDate = false;' },
+  ]);
+  await service.wait();
+  const result = await service.detail(run.id);
+  assert.equal(result.status, 'succeeded', result.error);
+  assert.deepEqual(roles, ['reader', 'comparison', 'comparison', 'comparison', 'arbitration']);
+  assert.equal(result.calls?.length, 5);
+  assert.deepEqual(result.usage, { inputTokens: 34, outputTokens: 17 });
+  assert.deepEqual(result.codeRetrieval?.searches, [
+    { query: 'format', paths: ['src/unchanged.ts'], truncated: false },
+  ]);
+  assert.equal(
+    result.sources.find((source) => source.path === 'src/unchanged.ts')?.revision,
+    f.commit,
+  );
+  assert.equal(
+    result.retrieval?.sourceIds.length,
+    3,
+    'only specifications go through memory retrieval',
+  );
+});
+
+test('comparison stops without findings when the model exceeds the code retrieval budget', async (t) => {
+  const f = await fixture();
+  const model = mockModel();
+  const service = new BrainAgents({
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: async (...args) =>
+      args[0] === 'comparison'
+        ? {
+            value: { checks: [], requests: [{ action: 'search', query: 'format' }] },
+            inputTokens: 2,
+            outputTokens: 1,
+          }
+        : model.call(...args),
+  });
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const run = await service.start('dashboard', f.commit);
+  await service.wait();
+  const result = await service.detail(run.id);
+  assert.equal(result.status, 'failed');
+  assert.match(result.error!, /retrieval limit/);
+  assert.deepEqual(result.findings, []);
+  assert.equal(
+    result.calls?.filter((call) => call.role === 'comparison').length,
+    brainConfig.codeRetrieval.maxRounds + 1,
+  );
+  assert.equal(
+    result.calls?.some((call) => call.role === 'arbitration'),
+    false,
+  );
 });
 
 test('Brain agents: project capture, ordered mock calls, concurrent arbitration and persistent evidence', async () => {
@@ -1122,6 +1263,16 @@ test('analysis storage upgrades existing archives and limits lightweight run sum
   legacy
     .prepare('INSERT INTO brain_agent_runs VALUES (?, ?)')
     .run(archived.id, JSON.stringify(archived));
+  const estimated: AnalysisRun = {
+    ...archived,
+    id: 'legacy-estimated',
+    status: 'succeeded',
+    usage: { inputTokens: 1000, outputTokens: 500 },
+    legacyCostEstimate: { costUsd: 0.0008, estimatedAt: '2026-09-21T00:00:00Z' },
+  };
+  legacy
+    .prepare('INSERT INTO brain_agent_runs VALUES (?, ?)')
+    .run(estimated.id, JSON.stringify(estimated));
   legacy.close();
   const service = new BrainAgents({
     dbPath: f.dbPath,
@@ -1136,6 +1287,15 @@ test('analysis storage upgrades existing archives and limits lightweight run sum
     const preserved = await service.detail(archived.id);
     assert.equal(preserved.status, 'interrupted');
     assert.deepEqual(preserved.sources, archived.sources);
+    const overview = await service.overview();
+    const priced = overview.runs.find((run) => run.id === estimated.id)!;
+    assert.equal(priced.costUsd, 0.0008);
+    assert.equal(priced.costBasis, 'legacy_uncached');
+    assert.equal(priced.costStatus, 'estimated');
+    assert.equal(priced.callCount, null);
+    assert.equal(priced.usageKnown, false);
+    assert.equal(overview.runs.find((run) => run.id === archived.id)!.costUsd, null);
+    assert.equal((await service.detail(estimated.id)).calls, undefined);
     const run = await service.start('dashboard');
     await service.wait();
     assert.equal((await service.detail(run.id)).status, 'succeeded');

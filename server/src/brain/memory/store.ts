@@ -59,6 +59,14 @@ export class MemoryStore {
   dataset(id: string) {
     return this.storage.get<{ datasetId: string }>('brain_memory_datasets', id)?.datasetId;
   }
+  datasets() {
+    return this.storage
+      .entries<{ id: string; datasetId: string }>('brain_memory_datasets')
+      .map((entry) => entry.data);
+  }
+  removeDataset(id: string) {
+    return this.storage.removeDatasetBinding(id);
+  }
   saveDataset(id: string, datasetId: string) {
     return this.storage.put('brain_memory_datasets', id, { id, datasetId });
   }

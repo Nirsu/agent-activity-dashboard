@@ -38,7 +38,7 @@ test('submitted code rejects unsafe paths, duplicates, binaries, excessive size 
     [],
     [{ path: 'hooks/a.js', content: 42 }],
     [{ path: 'hooks/a.js', content: 'a\0b' }],
-    [{ path: 'hooks/a.js', content: 'x'.repeat(brainConfig.analysis.maxSourceBytes + 1) }],
+    [{ path: 'hooks/a.js', content: 'x'.repeat(brainConfig.codeRetrieval.maxSubmissionBytes + 1) }],
     [
       { path: 'hooks/a.js', content: 'x' },
       { path: 'hooks/a.js', content: null },

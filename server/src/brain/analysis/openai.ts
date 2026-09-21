@@ -150,14 +150,19 @@ export class OpenAIClient {
     }
 
     try {
-      const content = requireList(payload.output, brainConfig.analysis.maxResponseItems).flatMap(
-        (value) => {
-          const message = requireObject(value);
-          return message.type === 'message'
-            ? requireList(message.content, brainConfig.analysis.maxResponseItems)
-            : [];
-        },
-      );
+      const messages = requireList(payload.output, brainConfig.analysis.maxResponseItems)
+        .map(requireObject)
+        .filter((message) => message.type === 'message');
+      // Preliminary commentary can contain a separate JSON object. Only the final
+      // answer is authoritative; concatenating both makes otherwise valid JSON invalid.
+      const finalMessages = messages.filter((message) => message.phase === 'final_answer');
+      const selected = finalMessages.length
+        ? finalMessages
+        : messages.filter((message) => message.phase == null);
+      if (selected.length !== 1) {
+        fail('OpenAI did not return one unambiguous final message.');
+      }
+      const content = requireList(selected[0].content, brainConfig.analysis.maxResponseItems);
       const output = content
         .map(requireObject)
         .filter((part) => part.type === 'output_text')

@@ -79,7 +79,8 @@ try {
     run.requestTimeoutMs === 0 || brainConfig.cognee.indexTimeoutMs === 0
       ? Infinity
       : Date.now() +
-        3 * (run.requestTimeoutMs ?? brainConfig.analysis.defaultRequestTimeoutMs) +
+        (3 + brainConfig.codeRetrieval.maxRounds) *
+          (run.requestTimeoutMs ?? brainConfig.analysis.defaultRequestTimeoutMs) +
         brainConfig.cognee.indexTimeoutMs +
         brainConfig.client.completionGraceMs;
   while (true) {

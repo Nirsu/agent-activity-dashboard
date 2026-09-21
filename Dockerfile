@@ -14,6 +14,7 @@ ARG NPM_INSTALL_FLAGS="--maxsockets=3 --fetch-retries=5"
 RUN npm ci --no-audit --no-fund $NPM_INSTALL_FLAGS
 
 COPY server server
+COPY fleet/repository-url.cjs fleet/repository-url.cjs
 COPY ui ui
 RUN npm run build
 RUN npm prune --omit=dev
@@ -37,6 +38,7 @@ COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/server/package.json server/package.json
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/server/prompts server/prompts
+COPY --from=build /app/fleet/repository-url.cjs fleet/repository-url.cjs
 
 RUN mkdir -p /app/server/data && chown -R node:node /app/server/data
 USER node

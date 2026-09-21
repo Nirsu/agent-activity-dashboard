@@ -6,9 +6,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { defaultRelayPort, repositoryAt, validatePolicy } from './project-policy.mjs';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
+const relayLimits = createRequire(import.meta.url)('./relay-config.json');
 const begin = '# >>> harmonie-agent-telemetry';
 const end = '# <<< harmonie-agent-telemetry';
 const events = [
@@ -86,7 +88,9 @@ export function mergeHooks(settings, command, wrapper, client) {
       );
       return handlers.length ? [{ ...group, hooks: handlers }] : [];
     });
-    hooks[event].push({ hooks: [{ type: 'command', command, timeout: 3 }] });
+    hooks[event].push({
+      hooks: [{ type: 'command', command, timeout: relayLimits.hookTimeoutSeconds }],
+    });
   }
   return { ...settings, hooks };
 }
@@ -136,12 +140,19 @@ function hookCommand(nodePath, wrapper, platform) {
 function wrapperSource(provider, client, url, team) {
   return (
     `// Installed by Harmonie agent setup. Structural metadata only.\n` +
+    `import { fileURLToPath } from 'node:url';\n` +
     `process.env.AAD_PROVIDER = ${JSON.stringify(provider)};\n` +
     `process.env.AAD_CLIENT ??= ${JSON.stringify(client)};\n` +
     `process.env.AAD_URL = ${JSON.stringify(url)};\n` +
     (team
       ? `process.env.OTEL_RESOURCE_ATTRIBUTES ??= ${JSON.stringify(`team.id=${team}`)};\n`
       : '') +
+    `if (process.env.AAD_DRY_RUN !== '1') {\n` +
+    `  try {\n` +
+    `    const { ensureRelay } = await import('./ensure-relay.mjs');\n` +
+    `    await ensureRelay({ configPath: fileURLToPath(new URL('./telemetry.json', import.meta.url)) });\n` +
+    `  } catch { console.error('Harmonie telemetry relay unavailable. Run agents:relay to inspect it.'); process.exit(0); }\n` +
+    `}\n` +
     `await import('./hook.mjs');\n`
   );
 }
@@ -156,6 +167,7 @@ export async function setup({
   clients = ['codex', 'claude'],
   codexClient = 'desktop',
   team = '',
+  individualToken = false,
   apply = false,
   nodePath = process.execPath,
   platform = process.platform,
@@ -187,7 +199,16 @@ export async function setup({
   if (team && !/^[a-zA-Z0-9_.-]{1,80}$/.test(team)) throw new Error('Use a short team identifier.');
   const planned = new Map();
   planned.set(policyPath, serializeSettings(originalPolicy, policy, policyPath));
-  for (const name of ['project-policy.mjs', 'projects.mjs', 'relay.mjs']) {
+  for (const name of [
+    'project-policy.mjs',
+    'repository-url.cjs',
+    'projects.mjs',
+    'relay.mjs',
+    'ensure-relay.mjs',
+    'relay-config.json',
+    'relay-outbox.mjs',
+    'safe-telemetry.mjs',
+  ]) {
     planned.set(join(installDir, name), await readFile(join(repository, 'fleet', name), 'utf8'));
   }
   planned.set(
@@ -237,8 +258,26 @@ export async function setup({
       const path = join(codexHome, 'config.toml');
       const original = await readOptional(path);
       let config = codexTelemetry(original, relayUrl);
+      const section =
+        /^\s*\[mcp_servers\.["']?harmony-brain["']?\s*\][^\S\r\n]*\r?\n[\s\S]*?(?=^\s*\[|$(?![\s\S]))/m;
+      const tokenLine = individualToken ? 'bearer_token_env_var = "HARMONIE_TOKEN"\n' : '';
       if (!/^\s*\[mcp_servers\.["']?harmony-brain["']?\s*\]/m.test(original)) {
-        config += `\n[mcp_servers.harmony-brain]\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n`;
+        config += `\n[mcp_servers.harmony-brain]\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n${tokenLine}`;
+      } else if (individualToken) {
+        if (
+          /^\s*\[mcp_servers\.["']?harmony-brain["']?\./m.test(original) ||
+          /(?:http_headers|env_http_headers)\s*=/.test(original.match(section)?.[0] ?? '')
+        ) {
+          throw new Error(
+            'Existing Brain MCP custom headers require manual migration to HARMONIE_TOKEN. No settings were changed.',
+          );
+        }
+        config = config.replace(section, (block) => {
+          const other = block.replace(/^\s*(?:url|bearer_token_env_var)\s*=.*\r?\n/gm, '');
+          return (
+            other.trimEnd() + `\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n${tokenLine}\n`
+          );
+        });
       } else {
         warnings.push('Existing Codex harmony-brain MCP connection preserved.');
       }
@@ -253,8 +292,12 @@ export async function setup({
       const original = await readOptional(path);
       const config = parseSettings(original, path);
       config.mcpServers = object(config.mcpServers ?? {}, 'mcpServers');
-      if (!config.mcpServers['harmony-brain']) {
-        config.mcpServers['harmony-brain'] = { type: 'http', url: `${url}/api/brain/mcp` };
+      if (!config.mcpServers['harmony-brain'] || individualToken) {
+        config.mcpServers['harmony-brain'] = {
+          type: 'http',
+          url: `${url}/api/brain/mcp`,
+          ...(individualToken ? { headers: { Authorization: 'Bearer ${HARMONIE_TOKEN}' } } : {}),
+        };
       } else {
         warnings.push('Existing Claude harmony-brain MCP connection preserved.');
       }
@@ -309,6 +352,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         'codex-client': { type: 'string' },
         project: { type: 'string', multiple: true },
         'relay-port': { type: 'string' },
+        'individual-token': { type: 'boolean', default: false },
         apply: { type: 'boolean', default: false },
       },
     });
@@ -316,6 +360,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       url: values.url,
       clients: values.clients?.split(','),
       team: values.team,
+      individualToken: values['individual-token'],
       codexClient: values['codex-client'],
       projects: values.project,
       relayPort: values['relay-port'] === undefined ? undefined : Number(values['relay-port']),
@@ -324,7 +369,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(JSON.stringify(result, null, 2));
     console.log(
       result.applied
-        ? 'Run npm run agents:relay. Restart clients and review the installed Codex hooks with /hooks. Only selected repositories are forwarded; an empty list sends nothing.'
+        ? 'Restart clients and review the installed Codex hooks with /hooks. Hooks start the relay automatically. Only selected repositories are forwarded; an empty list sends nothing.'
         : 'Preview only. Add --apply to install.',
     );
   } catch (error) {

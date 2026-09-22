@@ -5,10 +5,12 @@ export function AccountEditor({
   account,
   busy,
   save,
+  close,
 }: {
   account?: Account;
   busy: boolean;
   save: (input: AccountInput, id?: string) => Promise<void>;
+  close: () => void;
 }) {
   const [name, setName] = useState(account?.name ?? '');
   const [email, setEmail] = useState(account?.email ?? '');
@@ -22,10 +24,27 @@ export function AccountEditor({
         void save(input, account?.id);
       }}
     >
-      <h2>{account ? 'Account details' : 'New developer account'}</h2>
+      <div className="access-section-heading">
+        <div>
+          <span className="access-eyebrow">Developer settings</span>
+          <h2>{account ? 'Account details' : 'New developer account'}</h2>
+        </div>
+        <button
+          type="button"
+          className="access-close"
+          aria-label="Close account editor"
+          disabled={busy}
+          onClick={close}
+        >
+          ×
+        </button>
+      </div>
       <label>
         Name
         <input
+          autoFocus
+          disabled={busy}
+          placeholder="e.g. Alex Morgan"
           required
           maxLength={160}
           value={name}
@@ -37,6 +56,8 @@ export function AccountEditor({
         <input
           required
           type="email"
+          disabled={busy}
+          placeholder="alex@company.com"
           maxLength={254}
           value={email}
           onChange={(event) => setEmail(event.target.value)}
@@ -46,10 +67,11 @@ export function AccountEditor({
         Team
         <input
           maxLength={80}
+          disabled={busy}
           pattern="[a-zA-Z0-9_.-]*"
           value={team}
           onChange={(event) => setTeam(event.target.value)}
-          placeholder="equipe-mobile"
+          placeholder="e.g. platform-team"
         />
       </label>
       <p>
@@ -61,8 +83,8 @@ export function AccountEditor({
           Activity label: <strong>{account.activityLabel}</strong>
         </p>
       )}
-      <div className="access-actions">
-        <button disabled={busy} type="submit">
+      <div className="access-form-footer">
+        <button className="access-primary" disabled={busy} type="submit">
           {account ? 'Save changes' : 'Create account'}
         </button>
         {account && (

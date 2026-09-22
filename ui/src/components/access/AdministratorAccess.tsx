@@ -15,7 +15,7 @@ export function AdministratorAccess({
   const [adminToken, setAdminToken] = useState('');
   return (
     <form
-      className="access-panel access-form"
+      className="access-panel access-form access-unlock"
       onSubmit={(event) => {
         event.preventDefault();
         if (dashboardToken.trim()) setDashboardToken(dashboardToken.trim());
@@ -48,7 +48,7 @@ export function AdministratorAccess({
           onChange={(event) => setAdminToken(event.target.value)}
         />
       </label>
-      <button disabled={busy}>{`Unlock ${section}`}</button>
+      <button className="access-primary" disabled={busy}>{`Unlock ${section}`}</button>
     </form>
   );
 }

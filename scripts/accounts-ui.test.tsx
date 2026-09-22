@@ -69,6 +69,8 @@ test('Projects adds a shared repository, enables filtering and disables an exist
       .findAllByType('label')
       .find((node) => node.children[0] === name)!
       .findByType('input');
+  assert.equal(renderer.root.findAllByType('form').length, 0);
+  await act(async () => button('Add project').props.onClick());
   await act(async () => {
     field('Project name').props.onChange({ target: { value: 'Shared project' } });
     field('Git remote URL').props.onChange({ target: { value: 'git@github.com:org/project.git' } });
@@ -76,13 +78,22 @@ test('Projects adds a shared repository, enables filtering and disables an exist
   await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
   assert.match(text(), /github.com\/org\/project/);
   assert.equal(requests[0].body.brainProjectId, undefined);
-  assert.equal(field('Git remote URL').props.value, '');
+  assert.equal(renderer.root.findAllByType('form').length, 0, 'successful save closes the editor');
   await act(async () => button('Enable repository filter').props.onClick());
   assert.match(text(), /Repository filter enabled/);
   await act(async () => button('Disable repository').props.onClick());
   assert.equal(requests.at(-1)?.body.enabled, false);
   assert.match(text(), /Disabled/);
   assert.match(text(), /Enable repository/);
+  await act(async () =>
+    renderer.root
+      .findByProps({ 'aria-label': 'Search projects' })
+      .props.onChange({ target: { value: 'missing' } }),
+  );
+  assert.match(text(), /No matching projects/);
+  assert.equal(renderer.root.findAllByType('article').length, 0);
+  await act(async () => button('Clear filters').props.onClick());
+  assert.equal(renderer.root.findAllByType('article').length, 1);
   await act(async () => button('Edit repository').props.onClick());
   assert.equal(field('Project name').props.value, 'Shared project');
   await act(async () => {
@@ -95,6 +106,16 @@ test('Projects adds a shared repository, enables filtering and disables an exist
   assert.equal(requests.at(-1)?.body.enabled, false, 'editing must not re-enable a repository');
   assert.equal(state.repositories.length, 1, 'editing must not create a duplicate');
   assert.match(text(), /Brain: Dashboard project/);
+  await act(async () =>
+    renderer.root
+      .findByProps({ 'aria-label': 'Search projects' })
+      .props.onChange({ target: { value: 'dashboard project' } }),
+  );
+  assert.equal(
+    renderer.root.findAllByType('article').length,
+    1,
+    'search includes linked Brain project names',
+  );
   await act(async () => button('Edit repository').props.onClick());
   await act(async () =>
     renderer.root.findByType('select').props.onChange({ target: { value: '' } }),
@@ -105,7 +126,10 @@ test('Projects adds a shared repository, enables filtering and disables an exist
   const beforeCancel = requests.length;
   await act(async () => button('Cancel editing').props.onClick());
   assert.equal(requests.length, beforeCancel);
+  assert.equal(renderer.root.findAllByType('form').length, 0);
+  await act(async () => button('Add project').props.onClick());
   assert.equal(field('Project name').props.value, '');
+  assert.equal(field('Git remote URL').props.value, '');
 });
 
 test('Accounts creates a developer, shows a secret only on issuance, revokes tokens and disables the account', async (t) => {
@@ -186,6 +210,8 @@ test('Accounts creates a developer, shows a secret only on issuance, revokes tok
       .findAllByType('label')
       .find((node) => node.children[0] === name)!
       .findByType('input');
+  assert.equal(renderer.root.findAllByType('form').length, 0);
+  await act(async () => button('New account').props.onClick());
   await act(async () => {
     field('Name').props.onChange({ target: { value: 'New developer' } });
     field('Email').props.onChange({ target: { value: 'dev@example.test' } });
@@ -206,6 +232,8 @@ test('Accounts creates a developer, shows a secret only on issuance, revokes tok
       .props.onSubmit({ preventDefault() {} }),
   );
   assert.equal(renderer.root.findByType('textarea').props.value, 'test-secret-only-once');
+  await act(async () => button('Copy token').props.onClick());
+  assert.match(text(), /Could not copy automatically/);
   accessRevoked = true;
   await act(async () => button('Refresh').props.onClick());
   assert.doesNotMatch(text(), /test-secret-only-once/);
@@ -218,9 +246,31 @@ test('Accounts creates a developer, shows a secret only on issuance, revokes tok
   await act(async () => button('Disable & revoke all tokens').props.onClick());
   assert.match(text(), /Disabled/);
   assert.equal(button('Generate token').props.disabled, true);
+  const statusFilter = renderer.root.findByProps({ 'aria-label': 'Filter accounts by status' });
+  await act(async () =>
+    statusFilter
+      .findAllByType('button')
+      .find((node) => node.children[0] === 'Active')!
+      .props.onClick(),
+  );
+  assert.match(text(), /No matching developers/);
+  await act(async () => button('Clear filters').props.onClick());
+  await act(async () =>
+    renderer.root
+      .findByProps({ 'aria-label': 'Search accounts' })
+      .props.onChange({ target: { value: 'MOBILE' } }),
+  );
+  assert.equal(
+    renderer.root.findByProps({ className: 'access-list' }).findAllByType('button').length,
+    1,
+    'search includes team names without case sensitivity',
+  );
   assert.equal(
     requests.find((request) => request.method === 'DELETE')?.path,
     '/api/brain/access/tokens/device',
   );
   assert.equal(requests.filter((request) => request.method === 'PUT').at(-1)?.body.enabled, false);
+  await act(async () => button('Lock page').props.onClick());
+  assert.match(text(), /Unlock accounts/);
+  assert.doesNotMatch(text(), /Account details/);
 });

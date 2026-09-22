@@ -21,7 +21,7 @@ export async function ensureRelay({ configPath = defaultConfigPath(), launch = s
       const value = await response.json();
       if (
         value.service !== 'harmonie-project-relay' ||
-        value.version !== 4 ||
+        value.version !== 5 ||
         value.configurationId !== configurationId ||
         value.credentialId !== credentialId
       ) {

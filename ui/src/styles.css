@@ -44,6 +44,8 @@ body {
 /* ---- Topbar ---- */
 .topbar {
   display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
   align-items: center;
   justify-content: space-between;
   padding: 6px 2px 18px;
@@ -58,7 +60,9 @@ body {
   height: 38px;
   border-radius: 11px;
   background: linear-gradient(135deg, var(--accent), var(--violet));
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), var(--shadow);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    var(--shadow);
 }
 .brand-title {
   font-size: 18px;
@@ -71,6 +75,8 @@ body {
 }
 .conn {
   display: flex;
+  flex-shrink: 0;
+  white-space: nowrap;
   align-items: center;
   gap: 7px;
   font-size: 13px;
@@ -101,11 +107,11 @@ body {
 
 .topbar-right {
   display: flex;
+  max-width: 100%;
   align-items: center;
   gap: 12px;
 }
-.viewswitch,
-.provider-switch {
+.viewswitch {
   display: flex;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -114,6 +120,8 @@ body {
 }
 .viewswitch button,
 .provider-switch button {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -124,13 +132,51 @@ body {
   border-radius: 999px;
   cursor: pointer;
 }
-.viewswitch button.on,
-.provider-switch button.on {
+.viewswitch button.on {
   background: var(--accent-soft);
   color: var(--accent);
 }
+.viewswitch {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--surface);
+}
+.activity-filters {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+.activity-filters h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.provider-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .provider-switch button {
-  padding-inline: 11px;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  text-align: left;
+}
+.provider-switch button:hover:not(.on) {
+  background: var(--surface-2);
+}
+.provider-switch button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ---- Shell: directory + main ---- */
@@ -143,14 +189,21 @@ body {
 .shell-wide {
   grid-template-columns: minmax(0, 1fr);
 }
-.directory {
+.activity-sidebar {
   position: sticky;
   top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  max-height: calc(100vh - 40px);
+}
+.directory {
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
   padding: 8px;
-  max-height: calc(100vh - 40px);
   overflow-y: auto;
 }
 .dir-all,
@@ -175,6 +228,7 @@ body {
   font-size: 13.5px;
   margin-bottom: 4px;
 }
+.provider-switch button.on,
 .dir-all.sel,
 .dir-stream-head.sel,
 .dir-agent.sel {
@@ -275,8 +329,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background:
-    radial-gradient(1000px 500px at 50% 0%, rgba(91, 140, 255, 0.05), transparent),
-    var(--bg-elev);
+    radial-gradient(1000px 500px at 50% 0%, rgba(91, 140, 255, 0.05), transparent), var(--bg-elev);
   padding: 12px;
 }
 .map-legend {
@@ -339,7 +392,10 @@ body {
   border-radius: 999px;
   padding: 5px 11px 5px 8px;
   color: var(--text);
-  transition: transform 0.25s ease, border-color 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.25s ease,
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 .map-node:hover {
   border-color: var(--accent);
@@ -401,7 +457,7 @@ body {
   .shell {
     grid-template-columns: 1fr;
   }
-  .directory {
+  .activity-sidebar {
     position: static;
     max-height: none;
   }
@@ -682,7 +738,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition:
+    transform 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
 }
 .card:hover {
   transform: translateY(-2px);

@@ -186,6 +186,7 @@ export async function setup({
     selected.add(project.path);
   }
   const policy = validatePolicy({
+    ...previousPolicy,
     version: 1,
     dashboardUrl: url,
     relayPort: relayPort ?? previousPolicy?.relayPort ?? defaultRelayPort,

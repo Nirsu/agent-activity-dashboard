@@ -2,53 +2,72 @@ import { useRef, useState } from 'react';
 import { setBrainAdminToken } from './brain/api';
 import { AdministratorAccess } from './access/AdministratorAccess';
 import { useAccounts } from './access/useAccounts';
+import {
+  AccessEmpty,
+  AccessHeader,
+  AccessIcon,
+  AccessPolicy,
+  AccessStatus,
+  AccessToolbar,
+  type AccessFilter,
+} from './access/AccessUI';
+import { RepositoryEditor } from './access/RepositoryEditor';
 import './Accounts.css';
 
 export function Projects() {
   const access = useAccounts();
-  const [name, setName] = useState('');
-  const [remote, setRemote] = useState('');
-  const [brainProjectId, setBrainProjectId] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const nameInput = useRef<HTMLInputElement>(null);
+  const [editor, setEditor] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<AccessFilter>('all');
+  const [notice, setNotice] = useState('');
+  const addButton = useRef<HTMLButtonElement>(null);
   const state = access.state;
-  const editing = state?.repositories.find((repository) => repository.id === editingId);
-  function resetEditor() {
-    setEditingId(null);
-    setName('');
-    setRemote('');
-    setBrainProjectId('');
-  }
+  const repositories = state?.repositories ?? [];
+  const enabled = repositories.filter((repository) => repository.enabled).length;
+  const visible = repositories.filter((repository) => {
+    const projectName =
+      state?.projects.find((project) => project.id === repository.brainProjectId)?.name ??
+      repository.brainProjectId ??
+      '';
+    return (
+      (filter === 'all' || repository.enabled === (filter === 'enabled')) &&
+      `${repository.name} ${repository.remote} ${projectName}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase())
+    );
+  });
+  const closeEditor = () => {
+    setEditor(null);
+    addButton.current?.focus();
+  };
   return (
     <main className="access-page">
-      <div className="access-heading">
-        <div>
-          <span className="access-eyebrow">ADMINISTRATION</span>
-          <h1>Projects</h1>
-          <p>
-            Choose which Git repositories can send agent activity. This list applies to every
-            developer.
-          </p>
-        </div>
-        <div className="access-actions">
-          <button disabled={access.busy} onClick={() => void access.refresh()}>
-            Refresh
-          </button>
-          {state && (
-            <button
-              disabled={access.busy}
-              onClick={() => {
-                setBrainAdminToken('');
-                access.lock();
-                resetEditor();
-              }}
-            >
-              Lock page
-            </button>
-          )}
-        </div>
-      </div>
-      {!state && (
+      <AccessHeader
+        title="Projects"
+        description="Manage the repositories connected to your workspace."
+        busy={access.busy}
+        unlocked={Boolean(state)}
+        refresh={() => void access.refresh()}
+        lock={() => {
+          setBrainAdminToken('');
+          access.lock();
+          setEditor(null);
+          setNotice('');
+        }}
+      >
+        <button
+          className="access-primary access-add"
+          ref={addButton}
+          disabled={access.busy}
+          onClick={() => {
+            setEditor('new');
+            setNotice('');
+          }}
+        >
+          Add project
+        </button>
+      </AccessHeader>
+      {!state && !access.busy && (
         <AdministratorAccess section="projects" busy={access.busy} unlock={access.refresh} />
       )}
       {access.error && (
@@ -56,177 +75,209 @@ export function Projects() {
           {access.error}
         </p>
       )}
-      {access.busy && <p role="status">Updating projects…</p>}
+      <div className="access-feedback" role="status">
+        {access.busy ? 'Updating projects…' : state ? notice : ''}
+      </div>
       {state && (
         <>
-          <section className="access-panel access-policy">
+          <div className="access-summary">
             <div>
-              <h2>
-                {state.filterRepositories
-                  ? 'Repository filter enabled'
-                  : 'Repository filter disabled'}
-              </h2>
-              <p>
-                {state.filterRepositories
-                  ? 'Only enabled repositories below can send activity. An empty list blocks all incoming activity.'
-                  : 'Add your repositories, update developer relays, then enable the filter. While disabled, this list does not restrict incoming activity.'}
-              </p>
+              <span>Repositories</span>
+              <strong>
+                {repositories.length}
+                <small>in your workspace</small>
+              </strong>
             </div>
-            <button
-              disabled={access.busy}
-              onClick={() => void access.filterRepositories(!state.filterRepositories)}
+            <div>
+              <span>Enabled repositories</span>
+              <strong>
+                {enabled}
+                <small>available for collection</small>
+              </strong>
+            </div>
+            <div>
+              <span>Linked to Brain</span>
+              <strong>
+                {repositories.filter((repository) => repository.brainProjectId).length}
+                <small>project associations</small>
+              </strong>
+            </div>
+          </div>
+          <AccessPolicy
+            title={
+              state.filterRepositories ? 'Repository filter enabled' : 'Repository filter disabled'
+            }
+            enabled={state.filterRepositories}
+            description={
+              state.filterRepositories
+                ? 'Only enabled repositories can send activity. An empty list blocks all incoming activity.'
+                : 'All repositories can send activity. Add your repositories and update developer relays before enabling the filter.'
+            }
+            busy={access.busy}
+            action={
+              state.filterRepositories ? 'Disable repository filter' : 'Enable repository filter'
+            }
+            onChange={() => void access.filterRepositories(!state.filterRepositories)}
+          />
+          <div className={`access-project-layout${editor ? ' editing' : ''}`}>
+            <section
+              className="access-panel access-collection"
+              aria-label="Authorized repositories"
             >
-              {state.filterRepositories ? 'Disable repository filter' : 'Enable repository filter'}
-            </button>
-          </section>
-          <div className="access-grid">
-            <section className="access-panel">
-              <form
-                className="access-form"
-                onSubmit={async (event) => {
-                  event.preventDefault();
-                  const saved = await access.saveRepository(
-                    {
-                      name,
-                      remote,
-                      enabled: editing?.enabled ?? true,
-                      ...(brainProjectId ? { brainProjectId } : {}),
-                    },
-                    editingId ?? undefined,
-                  );
-                  if (saved) {
-                    resetEditor();
-                  }
-                }}
-              >
-                <h2>{editingId ? 'Edit authorized repository' : 'Add authorized repository'}</h2>
-                <label>
-                  Project name
-                  <input
-                    ref={nameInput}
-                    disabled={access.busy}
-                    required
-                    maxLength={160}
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                  />
-                </label>
-                <label>
-                  Git remote URL
-                  <input
-                    required
-                    maxLength={1000}
-                    placeholder="https://github.com/organization/project.git"
-                    disabled={access.busy}
-                    value={remote}
-                    onChange={(event) => setRemote(event.target.value)}
-                  />
-                </label>
-                <p>
-                  Use the repository's origin URL, in HTTPS or SSH format, without an access token.
-                </p>
-                <label>
-                  Brain project (optional)
-                  <select
-                    disabled={access.busy}
-                    value={brainProjectId}
-                    onChange={(event) => setBrainProjectId(event.target.value)}
-                  >
-                    <option value="">Activity only</option>
-                    {brainProjectId &&
-                      !state.projects.some((project) => project.id === brainProjectId) && (
-                        <option value={brainProjectId}>
-                          {brainProjectId} (no longer registered)
-                        </option>
-                      )}
-                    {state.projects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="access-actions">
-                  <button disabled={access.busy}>
-                    {editingId ? 'Save repository' : 'Add repository'}
-                  </button>
-                  {editingId && (
-                    <button type="button" disabled={access.busy} onClick={resetEditor}>
-                      Cancel editing
+              <div className="access-collection-heading">
+                <h2>
+                  Repositories <span className="access-count">{repositories.length}</span>
+                </h2>
+                <span>Shared across all developers</span>
+              </div>
+              <AccessToolbar
+                query={query}
+                setQuery={setQuery}
+                filter={filter}
+                setFilter={setFilter}
+                total={repositories.length}
+                enabled={enabled}
+                kind="projects"
+              />
+              {!repositories.length ? (
+                <AccessEmpty
+                  icon="folder"
+                  title="Connect your first project"
+                  action={
+                    <button className="access-primary" onClick={() => setEditor('new')}>
+                      Add your first project
                     </button>
-                  )}
-                </div>
-              </form>
-            </section>
-            <section className="access-panel">
-              <h2>Authorized repositories</h2>
-              {!state.repositories.length && <p>No repositories added yet.</p>}
-              {state.repositories.map((repository) => (
-                <div className="access-token" key={repository.id}>
-                  <div>
-                    <strong>{repository.name}</strong>
-                    <span className="repository-remote">{repository.remote}</span>
-                    <small>
-                      {repository.enabled ? 'Enabled' : 'Disabled'} ·{' '}
-                      {repository.brainProjectId
-                        ? `Brain: ${state.projects.find((project) => project.id === repository.brainProjectId)?.name ?? repository.brainProjectId}`
-                        : 'Activity only'}
-                    </small>
-                  </div>
-                  <div className="access-actions">
+                  }
+                >
+                  Add a Git repository to manage where agent activity comes from.
+                </AccessEmpty>
+              ) : !visible.length ? (
+                <AccessEmpty
+                  icon="search"
+                  title="No matching projects"
+                  action={
                     <button
-                      disabled={access.busy}
                       onClick={() => {
-                        setEditingId(repository.id);
-                        setName(repository.name);
-                        setRemote(repository.remote);
-                        setBrainProjectId(repository.brainProjectId ?? '');
-                        nameInput.current?.focus();
+                        setQuery('');
+                        setFilter('all');
                       }}
                     >
-                      Edit repository
+                      Clear filters
                     </button>
-                    <button
-                      disabled={access.busy}
-                      onClick={() =>
-                        void access.saveRepository(
-                          {
-                            name: repository.name,
-                            remote: repository.remote,
-                            enabled: !repository.enabled,
-                            ...(repository.brainProjectId
-                              ? { brainProjectId: repository.brainProjectId }
-                              : {}),
-                          },
-                          repository.id,
-                        )
-                      }
+                  }
+                >
+                  Try another project name, remote URL or status.
+                </AccessEmpty>
+              ) : (
+                <div className="access-repositories">
+                  {visible.map((repository) => (
+                    <article
+                      className={`access-repository${editor === repository.id ? ' selected' : ''}`}
+                      key={repository.id}
                     >
-                      {repository.enabled ? 'Disable repository' : 'Enable repository'}
-                    </button>
-                  </div>
+                      <span className="access-repository-icon">
+                        <AccessIcon name="folder" />
+                      </span>
+                      <div className="access-repository-main">
+                        <div className="access-repository-title">
+                          <h3>{repository.name}</h3>
+                          <AccessStatus tone={repository.enabled ? 'good' : 'muted'}>
+                            {repository.enabled ? 'Enabled' : 'Disabled'}
+                          </AccessStatus>
+                        </div>
+                        <p className="repository-remote">{repository.remote}</p>
+                        <span
+                          className={`access-project-link${repository.brainProjectId ? ' linked' : ''}`}
+                        >
+                          {repository.brainProjectId
+                            ? `Brain: ${state.projects.find((project) => project.id === repository.brainProjectId)?.name ?? repository.brainProjectId}`
+                            : 'Activity only'}
+                        </span>
+                      </div>
+                      <div className="access-repository-actions">
+                        <button
+                          disabled={access.busy}
+                          aria-label={`Edit repository ${repository.name}`}
+                          onClick={() => {
+                            setEditor(repository.id);
+                            setNotice('');
+                          }}
+                        >
+                          Edit repository
+                        </button>
+                        <button
+                          className="access-quiet"
+                          disabled={access.busy}
+                          aria-label={`${repository.enabled ? 'Disable' : 'Enable'} repository ${repository.name}`}
+                          onClick={() =>
+                            void access.saveRepository(
+                              {
+                                name: repository.name,
+                                remote: repository.remote,
+                                enabled: !repository.enabled,
+                                ...(repository.brainProjectId
+                                  ? { brainProjectId: repository.brainProjectId }
+                                  : {}),
+                              },
+                              repository.id,
+                            )
+                          }
+                        >
+                          {repository.enabled ? 'Disable repository' : 'Enable repository'}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
                 </div>
-              ))}
+              )}
+              <div className="access-collection-footer">
+                {visible.length} of {repositories.length} repositories
+              </div>
             </section>
+            {editor && (
+              <aside className="access-panel access-detail">
+                <RepositoryEditor
+                  key={editor}
+                  repository={repositories.find((repository) => repository.id === editor)}
+                  projects={state.projects}
+                  busy={access.busy}
+                  close={closeEditor}
+                  save={async (input, id) => {
+                    const saved = await access.saveRepository(input, id);
+                    if (saved) {
+                      closeEditor();
+                      setQuery('');
+                      setFilter('all');
+                      setNotice(id ? 'Repository updated.' : 'Project added to your workspace.');
+                    }
+                  }}
+                />
+              </aside>
+            )}
           </div>
-          <section className="access-panel">
-            <h2>Connect developer workstations</h2>
-            <p>
-              Update the agent setup and restart each relay before enabling the filter. Each
-              workstation must also select its local clones during setup. The relay reads their Git
-              origin and checks this shared list before sending activity.
-            </p>
-            <p>
-              Manage developer identities and revoke workstation tokens in{' '}
-              <a href="#accounts">Accounts</a>.
-            </p>
-            <h2>Enable Brain analyses</h2>
-            <p>
-              Adding a repository here authorizes activity collection. To analyze its code, register
-              its server-side Git checkout and approved references in the Brain project
-              configuration. All active developers share access to those registered Brain projects.
-            </p>
-          </section>
+          <details className="access-guide">
+            <summary>
+              Connecting workstations & enabling Brain analyses<span>Setup guide</span>
+            </summary>
+            <div className="access-guide-grid">
+              <div>
+                <h3>01 · Connect workstations</h3>
+                <p>
+                  Update the agent setup, select the local clones and restart each relay before
+                  enabling the filter. The relay checks each Git origin against this shared list.
+                </p>
+                <a href="#accounts">Manage accounts & workstation tokens →</a>
+              </div>
+              <div>
+                <h3>02 · Enable code analyses</h3>
+                <p>
+                  Repository authorization enables activity collection. For code analyses, register
+                  the server-side Git checkout and approved references in the Brain project
+                  configuration. All active developers share access.
+                </p>
+              </div>
+            </div>
+          </details>
         </>
       )}
     </main>

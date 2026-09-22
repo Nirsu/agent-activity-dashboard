@@ -1,55 +1,70 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { setBrainAdminToken } from './brain/api';
-import { brainConfig } from './brain/config';
 import { AccountEditor } from './access/AccountEditor';
 import { AdministratorAccess } from './access/AdministratorAccess';
-import { useAccounts, type WorkstationToken } from './access/useAccounts';
+import { useAccounts } from './access/useAccounts';
+import {
+  AccessEmpty,
+  AccessHeader,
+  AccessIcon,
+  AccessPolicy,
+  AccessStatus,
+  AccessToolbar,
+  type AccessFilter,
+} from './access/AccessUI';
+import { accessDate, IssuedToken, tokenStatus, Workstations } from './access/Workstations';
 import './Accounts.css';
-
-function tokenStatus(token: WorkstationToken) {
-  return token.revokedAt
-    ? 'Revoked'
-    : Date.parse(token.expiresAt) <= Date.now()
-      ? 'Expired'
-      : 'Active';
-}
-const date = (value?: string) => (value ? new Date(value).toLocaleString() : 'Never');
 
 export function Accounts() {
   const accounts = useAccounts();
   const [selected, setSelected] = useState<string | null>(null);
-  const [label, setLabel] = useState('');
-  const [days, setDays] = useState(brainConfig.access.defaultTokenDays);
-  const [copied, setCopied] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<AccessFilter>('all');
+  const [notice, setNotice] = useState('');
+  const addButton = useRef<HTMLButtonElement>(null);
   const state = accounts.state;
   const account = state?.accounts.find((item) => item.id === selected);
-  const tokens = state?.tokens.filter((token) => token.accountId === selected) ?? [];
+  const enabled = state?.accounts.filter((item) => item.enabled).length ?? 0;
+  const visible =
+    state?.accounts.filter(
+      (item) =>
+        (filter === 'all' || item.enabled === (filter === 'enabled')) &&
+        `${item.name} ${item.email} ${item.team}`
+          .toLowerCase()
+          .includes(query.trim().toLowerCase()),
+    ) ?? [];
+  const closeEditor = () => {
+    setSelected(null);
+    addButton.current?.focus();
+  };
   return (
     <main className="access-page">
-      <div className="access-heading">
-        <div>
-          <span className="access-eyebrow">ADMINISTRATION</span>
-          <h1>Accounts & access</h1>
-          <p>Connect developer workstations and control their access to Harmony Brain.</p>
-        </div>
-        <div className="access-actions">
-          <button disabled={accounts.busy} onClick={() => void accounts.refresh()}>
-            Refresh
-          </button>
-          {state && (
-            <button
-              disabled={accounts.busy}
-              onClick={() => {
-                setBrainAdminToken('');
-                accounts.lock();
-              }}
-            >
-              Lock page
-            </button>
-          )}
-        </div>
-      </div>
-      {!state && (
+      <AccessHeader
+        title="Accounts"
+        description="Manage your developers and the workstations they connect."
+        busy={accounts.busy}
+        unlocked={Boolean(state)}
+        refresh={() => void accounts.refresh()}
+        lock={() => {
+          setBrainAdminToken('');
+          accounts.lock();
+          setSelected(null);
+          setNotice('');
+        }}
+      >
+        <button
+          className="access-primary access-add"
+          ref={addButton}
+          disabled={accounts.busy}
+          onClick={() => {
+            setSelected('new');
+            setNotice('');
+          }}
+        >
+          New account
+        </button>
+      </AccessHeader>
+      {!state && !accounts.busy && (
         <AdministratorAccess section="accounts" busy={accounts.busy} unlock={accounts.refresh} />
       )}
       {accounts.error && (
@@ -57,206 +72,193 @@ export function Accounts() {
           {accounts.error}
         </p>
       )}
-      {accounts.busy && <p role="status">Updating access…</p>}
+      <div className="access-feedback" role="status">
+        {accounts.busy ? 'Updating access…' : state ? notice : ''}
+      </div>
       {state && (
         <>
           <div className="access-summary">
             <div>
-              <strong>{state.accounts.filter((account) => account.enabled).length}</strong>
               <span>Active accounts</span>
+              <strong>
+                {enabled}
+                <small>of {state.accounts.length} developers</small>
+              </strong>
             </div>
             <div>
+              <span>Active workstation tokens</span>
               <strong>
                 {state.tokens.filter((token) => tokenStatus(token) === 'Active').length}
+                <small>connected credentials</small>
               </strong>
-              <span>Active workstation tokens</span>
             </div>
             <div>
-              <strong>{state.requireDeviceTokens ? 'Individual' : 'Transition'}</strong>
               <span>Authentication mode</span>
+              <strong className="access-summary-mode">
+                {state.requireDeviceTokens ? 'Individual' : 'Transition'}
+                <small>
+                  {state.requireDeviceTokens
+                    ? 'A token for each workstation'
+                    : 'Shared keys still accepted'}
+                </small>
+              </strong>
             </div>
           </div>
-          <section className="access-panel access-policy">
-            <div>
-              <h2>Require individual workstation tokens</h2>
-              <p>
-                {state.requireDeviceTokens
-                  ? 'Telemetry and Brain MCP require a token assigned to a developer.'
-                  : 'Shared keys remain accepted during rollout. Switch after each workstation has its individual token.'}{' '}
-                Dashboard access stays separate.
-              </p>
-            </div>
-            <button
-              disabled={accounts.busy}
-              onClick={() => void accounts.requireTokens(!state.requireDeviceTokens)}
-            >
-              {state.requireDeviceTokens ? 'Allow shared keys' : 'Require individual tokens'}
-            </button>
-          </section>
-          <div className="access-grid">
-            <aside className="access-panel">
-              <div className="access-list-heading">
-                <h2>Developers</h2>
-                <button onClick={() => setSelected(null)}>New account</button>
+          <AccessPolicy
+            title="Individual workstation tokens"
+            enabled={state.requireDeviceTokens}
+            description={
+              state.requireDeviceTokens
+                ? 'Activity and Brain MCP require a token assigned to a developer. Dashboard access stays separate.'
+                : 'Shared keys are still accepted. Require individual tokens once every workstation has its own.'
+            }
+            busy={accounts.busy}
+            action={state.requireDeviceTokens ? 'Allow shared keys' : 'Require individual tokens'}
+            onChange={() => void accounts.requireTokens(!state.requireDeviceTokens)}
+          />
+          {accounts.issued && (
+            <IssuedToken
+              key={accounts.issued.token.id}
+              issued={accounts.issued}
+              close={accounts.clearIssued}
+            />
+          )}
+          <div className={`access-account-layout${selected ? ' editing' : ''}`}>
+            <section className="access-panel access-collection" aria-label="Developer accounts">
+              <div className="access-collection-heading">
+                <h2>
+                  Developers <span className="access-count">{state.accounts.length}</span>
+                </h2>
+                <span>Workspace access</span>
               </div>
-              {!state.accounts.length && (
-                <p>Create an account, then issue a token for each of its workstations.</p>
-              )}
-              <div className="access-list">
-                {state.accounts.map((item) => (
-                  <button
-                    key={item.id}
-                    aria-pressed={selected === item.id}
-                    className={selected === item.id ? 'selected' : ''}
-                    onClick={() => {
-                      setSelected(item.id);
-                      setLabel('');
-                    }}
-                  >
-                    <strong>{item.name}</strong>
-                    <span>{item.email}</span>
-                    <small>
-                      {item.enabled ? 'Active' : 'Disabled'} · {item.team || 'No team'}
-                    </small>
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <section className="access-panel">
-              <AccountEditor
-                key={account ? JSON.stringify(account) : 'new'}
-                account={account}
-                busy={accounts.busy}
-                save={async (input, id) => {
-                  const saved = await accounts.save(input, id);
-                  if (saved) setSelected(saved.id);
-                }}
+              <AccessToolbar
+                query={query}
+                setQuery={setQuery}
+                filter={filter}
+                setFilter={setFilter}
+                total={state.accounts.length}
+                enabled={enabled}
+                kind="accounts"
               />
-              {account && (
-                <div className="access-workstations">
-                  <h2>Workstations</h2>
-                  <p>
-                    One token sends activity and queries the authorized Brain projects. It cannot
-                    open the dashboard or perform administration.
-                  </p>
-                  <form
-                    className="access-token-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      setCopied(false);
-                      void accounts.issue(account.id, label, days);
-                    }}
-                  >
-                    <label>
-                      Workstation name
-                      <input
-                        required
-                        maxLength={160}
-                        placeholder="Windows laptop"
-                        value={label}
-                        onChange={(event) => setLabel(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      Expires in days
-                      <input
-                        type="number"
-                        required
-                        min={1}
-                        max={brainConfig.access.maxTokenDays}
-                        value={days}
-                        onChange={(event) => setDays(Number(event.target.value))}
-                      />
-                    </label>
-                    <button
-                      disabled={accounts.busy || !account.enabled || Boolean(accounts.issued)}
-                    >
-                      Generate token
+              {!state.accounts.length ? (
+                <AccessEmpty
+                  icon="people"
+                  title="Your team starts here"
+                  action={
+                    <button className="access-primary" onClick={() => setSelected('new')}>
+                      Add your first developer
                     </button>
-                  </form>
-                  {!tokens.length && <p>No workstation tokens yet.</p>}
-                  {tokens.map((token) => (
-                    <div className="access-token" key={token.id}>
-                      <div>
-                        <strong>{token.label}</strong>
-                        <span>
-                          {tokenStatus(token)} · Expires {date(token.expiresAt)}
+                  }
+                >
+                  Create an account, then generate a token for each workstation. Everyone shares
+                  access to registered Brain projects.
+                </AccessEmpty>
+              ) : !visible.length ? (
+                <AccessEmpty
+                  icon="search"
+                  title="No matching developers"
+                  action={
+                    <button
+                      onClick={() => {
+                        setQuery('');
+                        setFilter('all');
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  }
+                >
+                  Try another name, email, team or account status.
+                </AccessEmpty>
+              ) : (
+                <div className="access-list">
+                  {visible.map((item) => {
+                    const activeTokens = state.tokens.filter(
+                      (token) => token.accountId === item.id && tokenStatus(token) === 'Active',
+                    ).length;
+                    return (
+                      <button
+                        key={item.id}
+                        aria-pressed={selected === item.id}
+                        className={selected === item.id ? 'selected' : ''}
+                        onClick={() => {
+                          setSelected(item.id);
+                          setNotice('');
+                        }}
+                      >
+                        <span className="access-avatar">
+                          {item.name
+                            .trim()
+                            .split(/\s+/)
+                            .slice(0, 2)
+                            .map((part) => part[0])
+                            .join('')
+                            .toUpperCase()}
                         </span>
-                        <small>Last used: {date(token.lastUsedAt)}</small>
-                      </div>
-                      {tokenStatus(token) === 'Active' && (
-                        <button
-                          className="access-danger"
-                          disabled={accounts.busy}
-                          onClick={() => void accounts.revoke(token.id)}
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                        <span className="access-person">
+                          <strong>{item.name}</strong>
+                          <span>{item.email}</span>
+                          <small>
+                            {item.team || 'No team'} <span>·</span> {activeTokens} active{' '}
+                            {activeTokens === 1 ? 'token' : 'tokens'}
+                          </small>
+                        </span>
+                        <AccessStatus tone={item.enabled ? 'good' : 'muted'}>
+                          {item.enabled ? 'Active' : 'Disabled'}
+                        </AccessStatus>
+                        <AccessIcon name="arrow" />
+                      </button>
+                    );
+                  })}
                 </div>
               )}
+              <div className="access-collection-footer">
+                {visible.length} of {state.accounts.length} developers
+              </div>
             </section>
+            {selected && (
+              <aside className="access-panel access-detail">
+                <AccountEditor
+                  key={account ? JSON.stringify(account) : 'new'}
+                  account={account}
+                  busy={accounts.busy}
+                  close={closeEditor}
+                  save={async (input, id) => {
+                    const saved = await accounts.save(input, id);
+                    if (saved) {
+                      setSelected(saved.id);
+                      if (!id) {
+                        setQuery('');
+                        setFilter('all');
+                      }
+                      setNotice(
+                        id ? 'Account updated.' : 'Account created. Connect a workstation below.',
+                      );
+                    }
+                  }}
+                />
+                {account && <Workstations key={account.id} account={account} access={accounts} />}
+              </aside>
+            )}
           </div>
-          <details className="access-panel access-audit">
-            <summary>Recent access changes</summary>
+          <details className="access-guide access-audit">
+            <summary>
+              Recent access changes<span>{state.audit.length} events</span>
+            </summary>
             <p>
-              Administration currently uses the shared administrator key; these entries do not
-              identify an individual administrator.
+              Changes use the shared administrator key and do not identify an individual
+              administrator.
             </p>
+            {!state.audit.length && <p>No access changes recorded yet.</p>}
             {state.audit.map((entry) => (
-              <div key={entry.id}>
-                <time>{date(entry.at)}</time> <strong>{entry.action}</strong>{' '}
+              <div className="access-audit-entry" key={entry.id}>
+                <time>{accessDate(entry.at)}</time>
+                <strong>{entry.action}</strong>
                 <span>{entry.target}</span>
               </div>
             ))}
           </details>
         </>
-      )}
-      {accounts.issued && (
-        <section
-          className="access-secret access-panel"
-          role="region"
-          aria-label="New workstation token"
-        >
-          <h2>Copy this token now</h2>
-          <p>
-            For {accounts.issued.token.label}. This secret is shown only once. Deliver it through
-            your secure channel; it cannot be retrieved later.
-          </p>
-          <label>
-            Workstation token
-            <textarea readOnly rows={3} value={accounts.issued.secret} spellCheck={false} />
-          </label>
-          <div className="access-actions">
-            <button
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(accounts.issued!.secret);
-                  setCopied(true);
-                } catch {
-                  setCopied(false);
-                }
-              }}
-            >
-              {copied ? 'Copied' : 'Copy token'}
-            </button>
-            <button onClick={accounts.clearIssued}>I have saved it — close</button>
-          </div>
-          <p>
-            On the workstation, provide this value as <code>HARMONIE_TOKEN</code> in the environment
-            that launches your clients. Install with:
-          </p>
-          <pre>
-            npm run agents:setup -- --url &lt;dashboard-url&gt; --project &lt;repository-path&gt;
-            --individual-token --apply
-          </pre>
-          <p>
-            Restart the relay and clients after configuring the token. Approve the installed hooks
-            and MCP connection.
-          </p>
-        </section>
       )}
     </main>
   );

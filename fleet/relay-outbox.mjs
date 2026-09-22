@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, open, rename, unlink } from 'node:fs/promises
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { readPolicy, repositoryRemote } from './project-policy.mjs';
+import { readPolicy, repositoryRemote, selectedRepository } from './project-policy.mjs';
 import { safeTelemetry } from './safe-telemetry.mjs';
 
 const defaults = createRequire(import.meta.url)('./relay-config.json');
@@ -66,7 +66,7 @@ export class RelayOutbox {
     };
   }
 
-  enqueue(path, body, project, dashboardUrl) {
+  enqueue(path, body, project, dashboardUrl, workspace) {
     const operation = this.writing.then(async () => {
       const entry = {
         path,
@@ -76,6 +76,7 @@ export class RelayOutbox {
         repository: repositoryRemote(project),
         createdAt: Date.now(),
         credentialId: this.credentialId,
+        ...(workspace ? { workspace } : {}),
       };
       const text = JSON.stringify(entry);
       const bytes = Buffer.byteLength(text);
@@ -122,9 +123,17 @@ export class RelayOutbox {
     let differentCredential = false;
     for (const current of [...this.entries]) {
       const { entry } = current;
-      const policy = readPolicy(this.configPath);
-      let retired =
-        policy.dashboardUrl !== entry.dashboardUrl || !policy.projects.includes(entry.project);
+      const isRetired = () => {
+        const policy = readPolicy(this.configPath);
+        return (
+          policy.dashboardUrl !== entry.dashboardUrl ||
+          !policy.projects.includes(entry.project) ||
+          (entry.workspace &&
+            selectedRepository(entry.workspace, policy.projects, policy.workspaceBindings) !==
+              entry.project)
+        );
+      };
+      let retired = isRetired();
       const expired = Date.now() - entry.createdAt > this.limits.maxQueueAgeMs;
       if (!retired && !expired && entry.credentialId !== this.credentialId) {
         // Keep the original identity, including unknown entries from older relays.
@@ -142,6 +151,8 @@ export class RelayOutbox {
           this.lastError =
             'Repository is not authorized by the dashboard; queued activity was discarded.';
         }
+        // The local binding may have been removed while fetching shared policy.
+        retired = retired || isRetired();
       }
       if (!retired && !expired) {
         const headers = { 'content-type': 'application/json' };

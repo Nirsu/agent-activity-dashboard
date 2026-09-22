@@ -38,7 +38,7 @@ export type AccountInput = Pick<Account, 'name' | 'email' | 'team' | 'enabled'>;
 
 export function useAccounts() {
   const [state, setState] = useState<AccessState | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [issued, setIssued] = useState<{ secret: string; token: WorkstationToken } | null>(null);
   const refresh = useCallback(async () => {

@@ -124,27 +124,6 @@ export default function App() {
               Projects
             </button>
           </div>
-          {(view === 'board' || view === 'map') && (
-            <div className="provider-switch" role="group" aria-label="Filter by AI provider">
-              {(['all', 'claude', 'codex'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={provider === value ? 'on' : ''}
-                  aria-pressed={provider === value}
-                  onClick={() => {
-                    if (value !== provider) {
-                      setProvider(value);
-                      setSelection({ stream: null, agent: null });
-                      setSelectedId(null);
-                    }
-                  }}
-                >
-                  {value === 'all' ? 'All AI' : value === 'claude' ? 'Claude' : 'Codex'}
-                </button>
-              ))}
-            </div>
-          )}
           {view !== 'brain' && (
             <div className={`conn ${connected ? 'on' : 'off'}`}>
               <span className="dot" />
@@ -169,11 +148,35 @@ export default function App() {
 
           <div className={`shell${view === 'trends' ? ' shell-wide' : ''}`}>
             {view !== 'trends' && (
-              <Directory
-                sessions={directorySessions}
-                selection={selection}
-                onSelect={setSelection}
-              />
+              <aside className="activity-sidebar" aria-label="Activity filters">
+                <section className="activity-filters" aria-labelledby="activity-filters-title">
+                  <h2 id="activity-filters-title">AI Provider</h2>
+                  <div className="provider-switch" role="group" aria-label="Filter by AI provider">
+                    {(['all', 'claude', 'codex'] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={provider === value ? 'on' : ''}
+                        aria-pressed={provider === value}
+                        onClick={() => {
+                          if (value !== provider) {
+                            setProvider(value);
+                            setSelection({ stream: null, agent: null });
+                            setSelectedId(null);
+                          }
+                        }}
+                      >
+                        {value === 'all' ? 'All AI' : value === 'claude' ? 'Claude' : 'Codex'}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+                <Directory
+                  sessions={directorySessions}
+                  selection={selection}
+                  onSelect={setSelection}
+                />
+              </aside>
             )}
 
             <main className="main">

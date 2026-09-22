@@ -15,7 +15,7 @@
     "agents:setup": "node fleet/setup.mjs",
     "agents:projects": "node fleet/projects.mjs",
     "agents:relay": "node fleet/relay.mjs",
-    "test:agents-setup": "node --test fleet/setup.test.mjs fleet/relay.test.mjs fleet/relay-delivery.test.mjs",
+    "test:agents-setup": "node --test fleet/setup.test.mjs fleet/relay.test.mjs fleet/relay-delivery.test.mjs fleet/workspace-projects.test.mjs fleet/workspace-relay.test.mjs",
     "dev:server": "npm run dev --workspace server",
     "dev:ui": "npm run dev --workspace ui",
     "brain": "node scripts/start-brain.mjs",

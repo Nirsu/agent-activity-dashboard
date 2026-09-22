@@ -69,6 +69,48 @@ Git worktrees of a selected repository are included. A different clone, a nested
 repository or another repository with the same name requires its own selection.
 Do not select a parent directory expecting all its repositories to be enabled.
 
+### Tasks with a non-Git workspace folder
+
+Some Codex projects have a non-Git primary folder and a Git repository as an
+additional folder. Hooks report the task's primary working directory even when a
+tool runs inside the additional repository. Adding that repository in the
+dashboard's Projects page authorizes its Git origin on the server; it does not
+connect the primary folder to the developer's local selection.
+
+Use the repository as the task's primary folder, or explicitly bind the existing
+non-Git workspace folder to one selected repository:
+
+```sh
+npm run agents:projects -- --allow "C:/work/Harmonie/project"
+npm run agents:projects -- --bind-workspace "C:/work/Harmonie" --repository "C:/work/Harmonie/project"
+npm run agents:projects -- --list
+npm run agents:projects -- --unbind-workspace "C:/work/Harmonie"
+```
+
+The private `telemetry.json` stores the binding in `workspaceBindings`. This is a
+session-level attribution: lifecycle events and session usage from that exact
+primary folder belong to the selected repository. It does not inspect commands,
+tool arguments or files to determine where each operation happened. Bind a
+workspace only when attributing its whole task to that repository is appropriate;
+use separate tasks rooted in each repository when work spans multiple repositories.
+
+The workspace must exist and be outside a Git repository. The target must already
+be selected locally; `--allow` can also be included in the same command. Binding
+to a linked worktree requires selecting that exact checkout with `--allow`, even
+when its main repository is already selected. This preserves the worktree's branch
+for activity and ticket attribution instead of using another checkout's branch. Binding
+again replaces the target for that exact workspace. Other non-Git subfolders are
+not included, and a hook reporting a Git directory always uses that repository's
+own selection. An unselected or nested Git repository cannot inherit a binding.
+Removing a selected repository also removes its workspace bindings. Unbinding
+still works after the workspace folder has been deleted.
+
+Setup reruns preserve bindings. When upgrading an older installation, rerun
+`agents:setup -- --apply`, review any changed hooks, and restart the relay and
+clients as described above. Once installed, binding changes apply to the running
+relay; a subsequent lifecycle hook identifies the task. Previously dropped events
+cannot be recovered.
+
 Installed hooks start the relay automatically in the background before sending
 activity. A later hook restarts it if it has stopped; a terminal does not need to
 stay open. `node fleet/ensure-relay.mjs` starts it immediately and reuses an existing

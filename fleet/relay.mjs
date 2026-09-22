@@ -8,7 +8,13 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { defaultConfigPath, readPolicy, selectedRepository } from './project-policy.mjs';
+import {
+  defaultConfigPath,
+  readPolicy,
+  selectedRepository,
+  repositoryAt,
+  repositoryContext,
+} from './project-policy.mjs';
 import { RelayOutbox, relayCredentialId } from './relay-outbox.mjs';
 
 const relayLimits = createRequire(import.meta.url)('./relay-config.json');
@@ -38,19 +44,41 @@ function sessionId(local, resource) {
 
 const sessionKey = (provider, id) => `${provider}:${id}`;
 
+function selectedWorkspaceRepository(workspace, policy, workspaceChecks) {
+  if (!workspaceChecks.has(workspace)) {
+    workspaceChecks.set(
+      workspace,
+      selectedRepository(workspace, policy.projects, policy.workspaceBindings),
+    );
+  }
+  return workspaceChecks.get(workspace);
+}
+
 export class ProjectFilter {
   sessions = new Map();
   policySignature;
   dashboardUrl;
 
   applyPolicy(policy) {
-    const signature = JSON.stringify([policy.dashboardUrl, policy.projects]);
+    const signature = JSON.stringify([
+      policy.dashboardUrl,
+      policy.projects,
+      policy.workspaceBindings,
+    ]);
     if (this.policySignature === signature) return;
     if (this.dashboardUrl !== policy.dashboardUrl) {
       this.sessions.clear();
     }
+    const workspaceChecks = new Map();
     for (const [key, session] of this.sessions) {
-      if (!policy.projects.includes(session.project)) this.sessions.delete(key);
+      if (
+        !policy.projects.includes(session.project) ||
+        (session.workspace &&
+          selectedWorkspaceRepository(session.workspace, policy, workspaceChecks) !==
+            session.project)
+      ) {
+        this.sessions.delete(key);
+      }
     }
     this.dashboardUrl = policy.dashboardUrl;
     this.policySignature = signature;
@@ -67,20 +95,21 @@ export class ProjectFilter {
       return undefined;
     const key = sessionKey(payload.provider, payload.session_id);
     // No fallback to a previous authorization when cwd is missing or has changed.
-    const project = selectedRepository(payload.cwd, policy.projects);
+    const project = selectedRepository(payload.cwd, policy.projects, policy.workspaceBindings);
     if (!project) {
       this.sessions.delete(key);
       return undefined;
     }
     this.sessions.delete(key);
-    this.sessions.set(key, { project, at: Date.now() });
+    const workspace = repositoryAt(payload.cwd) ? undefined : payload.cwd;
+    this.sessions.set(key, { project, at: Date.now(), ...(workspace ? { workspace } : {}) });
     if (this.sessions.size > maximumSessions)
       this.sessions.delete(this.sessions.keys().next().value);
     // A child hook establishes only that child. Its parent must identify its own cwd.
-    return payload;
+    return workspace ? { ...payload, ...repositoryContext(project) } : payload;
   }
 
-  allowed(provider, id, policy) {
+  allowed(provider, id, policy, workspaceChecks = new Map()) {
     this.applyPolicy(policy);
     if (typeof id !== 'string') return false;
     const key = sessionKey(provider, id);
@@ -93,11 +122,19 @@ export class ProjectFilter {
       this.sessions.delete(key);
       return false;
     }
+    if (
+      session.workspace &&
+      selectedWorkspaceRepository(session.workspace, policy, workspaceChecks) !== session.project
+    ) {
+      this.sessions.delete(key);
+      return false;
+    }
     return true;
   }
 
   logs(body, policy) {
     const resourceLogs = [];
+    const workspaceChecks = new Map();
     for (const resource of body?.resourceLogs ?? []) {
       const resourceAttrs = attributes(resource.resource?.attributes);
       const scopeLogs = [];
@@ -110,7 +147,10 @@ export class ProjectFilter {
             : event?.startsWith('claude_code.')
               ? 'claude'
               : undefined;
-          return provider && this.allowed(provider, sessionId(attrs, resourceAttrs), policy);
+          return (
+            provider &&
+            this.allowed(provider, sessionId(attrs, resourceAttrs), policy, workspaceChecks)
+          );
         });
         if (logRecords.length) scopeLogs.push({ ...scope, logRecords });
       }
@@ -121,6 +161,7 @@ export class ProjectFilter {
 
   metrics(body, policy) {
     const resourceMetrics = [];
+    const workspaceChecks = new Map();
     for (const resource of body?.resourceMetrics ?? []) {
       const resourceAttrs = attributes(resource.resource?.attributes);
       const scopeMetrics = [];
@@ -146,6 +187,7 @@ export class ProjectFilter {
                 provider,
                 sessionId(attributes(point.attributes), resourceAttrs),
                 policy,
+                workspaceChecks,
               ),
             );
             if (dataPoints.length) {
@@ -182,12 +224,16 @@ export async function startRelay({
       saved.credentialId === credentialId &&
       Array.isArray(saved.sessions)
     ) {
+      const workspaceChecks = new Map();
       for (const [key, session] of saved.sessions.slice(-maximumSessions)) {
         if (
           typeof key === 'string' &&
           Number.isFinite(session?.at) &&
           Date.now() - session.at < sessionLifetimeMs &&
-          initial.projects.includes(session.project)
+          initial.projects.includes(session.project) &&
+          (!session.workspace ||
+            selectedWorkspaceRepository(session.workspace, initial, workspaceChecks) ===
+              session.project)
         ) {
           filter.sessions.set(key, session);
         }
@@ -225,7 +271,7 @@ export async function startRelay({
         return send(200, {
           ok: true,
           service: 'harmonie-project-relay',
-          version: 4,
+          version: 5,
           credentialId,
           configurationId: createHash('sha256').update(resolve(configPath)).digest('hex'),
           projects: policy.projects.length,
@@ -254,27 +300,45 @@ export async function startRelay({
       if (request.url === '/activity') {
         const payload = filter.activity(body, policy);
         // Bind this event before another request can change the session's cwd.
-        const project = payload
-          ? filter.sessions.get(sessionKey(payload.provider, payload.session_id)).project
+        const session = payload
+          ? filter.sessions.get(sessionKey(payload.provider, payload.session_id))
           : undefined;
         await saveSessions(policy);
         if (payload) {
-          await outbox.enqueue(request.url, payload, project, policy.dashboardUrl);
+          await outbox.enqueue(
+            request.url,
+            payload,
+            session.project,
+            policy.dashboardUrl,
+            session.workspace,
+          );
         }
       } else if (request.url === '/v1/logs' || request.url === '/v1/metrics') {
         filter.applyPolicy(policy);
         const sessions = [...filter.sessions];
         const batches = [];
-        for (const project of new Set(sessions.map(([, session]) => session.project))) {
+        const groups = new Map();
+        for (const [key, session] of sessions) {
+          const groupKey = JSON.stringify([session.project, session.workspace]);
+          if (!groups.has(groupKey)) {
+            groups.set(groupKey, {
+              project: session.project,
+              workspace: session.workspace,
+              sessions: [],
+            });
+          }
+          groups.get(groupKey).sessions.push([key, session]);
+        }
+        for (const { project, workspace, sessions: groupSessions } of groups.values()) {
           const scoped = new ProjectFilter();
           scoped.applyPolicy(policy);
-          scoped.sessions = new Map(sessions.filter(([, session]) => session.project === project));
+          scoped.sessions = new Map(groupSessions);
           const payload =
             request.url === '/v1/logs' ? scoped.logs(body, policy) : scoped.metrics(body, policy);
-          if (payload) batches.push({ payload, project });
+          if (payload) batches.push({ payload, project, workspace });
         }
-        for (const { payload, project } of batches) {
-          await outbox.enqueue(request.url, payload, project, policy.dashboardUrl);
+        for (const { payload, project, workspace } of batches) {
+          await outbox.enqueue(request.url, payload, project, policy.dashboardUrl, workspace);
         }
       }
       // Acknowledge durable local acceptance; delivery must not block the coding client.

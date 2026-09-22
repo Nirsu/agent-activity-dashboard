@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import test from 'node:test';
-import { repositoryAt, selectedRepository } from './project-policy.mjs';
+import { repositoryAt, selectedRepository, validatePolicy } from './project-policy.mjs';
 import { configureProjects } from './projects.mjs';
 import { startRelay, ProjectFilter } from './relay.mjs';
 
@@ -43,6 +43,45 @@ const logs = (...records) => ({
       scopeLogs: [{ scope: { name: 'fixture' }, logRecords: records }],
     },
   ],
+});
+
+test('workspace bindings require an exact non-Git directory and preserve repository isolation', async (t) => {
+  const f = await fixture(t);
+  const bindings = [{ workspace: f.directory, repository: f.policy.projects[0] }];
+  assert.equal(selectedRepository(f.directory, f.policy.projects), undefined);
+  assert.equal(selectedRepository(f.directory, f.policy.projects, bindings), f.policy.projects[0]);
+  assert.equal(
+    selectedRepository(join(f.directory, 'selected'), f.policy.projects, bindings),
+    undefined,
+  );
+  assert.equal(selectedRepository(f.excluded, f.policy.projects, bindings), undefined);
+  assert.equal(selectedRepository(undefined, f.policy.projects, bindings), undefined);
+  assert.equal(selectedRepository(f.directory, [], bindings), undefined);
+  assert.equal(
+    selectedRepository(f.excluded, f.policy.projects, [
+      { workspace: f.excluded, repository: f.policy.projects[0] },
+    ]),
+    undefined,
+    'an explicit workspace mapping cannot bypass an excluded Git repository',
+  );
+  assert.throws(
+    () =>
+      validatePolicy({
+        ...f.policy,
+        workspaceBindings: [{ workspace: f.directory, repository: f.excluded }],
+      }),
+    /selected repository/,
+  );
+  assert.throws(
+    () => validatePolicy({ ...f.policy, workspaceBindings: [...bindings, ...bindings] }),
+    /one repository/,
+  );
+  execFileSync('git', ['init', '--quiet'], { cwd: f.directory });
+  assert.equal(
+    selectedRepository(f.directory, f.policy.projects, bindings),
+    undefined,
+    'creating another Git repository at the workspace revokes the mapping',
+  );
 });
 
 test('repository selection respects nested repositories and recognizes linked worktrees', async (t) => {

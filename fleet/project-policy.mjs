@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 const { normalizeRepositoryRemote } = createRequire(import.meta.url)('./repository-url.cjs');
 
@@ -42,6 +42,30 @@ export function validatePolicy(value) {
   ) {
     throw new Error('Invalid telemetry configuration. No telemetry will be forwarded.');
   }
+  if (
+    value.workspaceBindings !== undefined &&
+    (!Array.isArray(value.workspaceBindings) ||
+      value.workspaceBindings.some(
+        (binding) =>
+          !binding ||
+          typeof binding.workspace !== 'string' ||
+          !isAbsolute(binding.workspace) ||
+          typeof binding.repository !== 'string' ||
+          !value.projects.includes(binding.repository),
+      ))
+  ) {
+    throw new Error('Invalid workspace bindings. Each workspace needs a selected repository.');
+  }
+  const workspaceBindings = value.workspaceBindings?.map(({ workspace, repository }) => ({
+    workspace,
+    repository,
+  }));
+  const workspaceKeys = workspaceBindings?.map(({ workspace }) =>
+    process.platform === 'win32' ? resolve(workspace).toLowerCase() : resolve(workspace),
+  );
+  if (workspaceKeys && new Set(workspaceKeys).size !== workspaceKeys.length) {
+    throw new Error('A workspace can only be bound to one repository.');
+  }
   const dashboardUrl = dashboardOrigin(value.dashboardUrl);
   const target = new URL(dashboardUrl);
   if (
@@ -55,6 +79,7 @@ export function validatePolicy(value) {
     dashboardUrl,
     relayPort: value.relayPort,
     projects: [...new Set(value.projects)],
+    ...(workspaceBindings?.length ? { workspaceBindings } : {}),
   };
 }
 
@@ -86,10 +111,44 @@ export function repositoryAt(path) {
   }
 }
 
-export function selectedRepository(cwd, projects) {
+export function selectedRepository(cwd, projects, workspaceBindings = []) {
   const current = repositoryAt(cwd);
-  if (!current) return undefined;
-  return projects.find((path) => repositoryAt(path)?.identity === current.identity);
+  if (current) {
+    return projects.find((path) => repositoryAt(path)?.identity === current.identity);
+  }
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) return undefined;
+  try {
+    const workspace = canonical(cwd);
+    const matches = workspaceBindings.filter((binding) => {
+      try {
+        return canonical(binding.workspace) === workspace;
+      } catch {
+        return false;
+      }
+    });
+    if (matches.length !== 1) return undefined;
+    const repository = matches[0].repository;
+    return projects.includes(repository) && repositoryAt(repository) ? repository : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function repositoryContext(path) {
+  let branch;
+  try {
+    branch =
+      execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: path,
+        encoding: 'utf8',
+        timeout: 1500,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() || undefined;
+  } catch {
+    // An unborn branch has no HEAD yet.
+  }
+  return { repo: basename(path), branch };
 }
 
 export function repositoryRemote(path) {

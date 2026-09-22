@@ -68,6 +68,7 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
   const { AggregateBar } = await vite.ssrLoadModule('/src/components/AggregateBar.tsx');
   const { Directory } = await vite.ssrLoadModule('/src/components/Directory.tsx');
   const { SessionDetail } = await vite.ssrLoadModule('/src/components/SessionDetail.tsx');
+  const { AgentMap } = await vite.ssrLoadModule('/src/components/AgentMap.tsx');
 
   const session = (provider: SessionState['provider']): SessionState => ({
     sessionId: `${provider}:session`,
@@ -108,13 +109,14 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
     type: 'snapshot' | 'sessions',
     sessions: SessionState[],
     withSummary = true,
+    total = aggregate(7),
   ) => {
     await act(async () =>
       TestSocket.latest.onmessage?.({
         data: JSON.stringify({
           type,
           sessions,
-          aggregate: aggregate(7),
+          aggregate: total,
           providerAggregates: withSummary ? summary : undefined,
           recentEvents: [],
         }),
@@ -288,6 +290,110 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
   await navigate('Board');
   assert.equal(providerButton('Codex').props['aria-pressed'], true);
   assert.equal(cost(), 6, 'returning to the board restores its provider selection');
+
+  await t.test(
+    'multi-team tasks are filterable by each team while totals stay unique',
+    async () => {
+      await click('All AI');
+      const shared = {
+        ...codex,
+        teams: [
+          { id: 'team-alpha', name: 'Alpha' },
+          { id: 'team-beta', name: 'Beta' },
+        ],
+        sessionTokens: 12000,
+        tokensKnown: true,
+      };
+      const total = { ...aggregate(7), tokensKnown: true, tokensTodayInput: 12000 };
+      await publish('sessions', [shared, claude], true, total);
+      assert.equal(cards().length, 3, 'the shared task appears in both teams');
+      assert.equal(cards().filter((card) => card.props.s.sessionId === shared.sessionId).length, 2);
+      assert.equal(renderer.root.findByType(AggregateBar).props.agg.activeSessions, 2);
+      assert.equal(renderer.root.findByType(AggregateBar).props.agg.tokensTodayInput, 12000);
+      assert.equal(cost(), 7);
+      assert.deepEqual(
+        renderer.root.findAllByProps({ className: 'active-task-count' })[0].props.children,
+        [2, ' active ', 'tasks'],
+      );
+      const directoryNames = () =>
+        renderer.root
+          .findByType(Directory)
+          .findAllByProps({ className: 'dir-stream-name' })
+          .map((name) => name.props.children);
+      assert.deepEqual(directoryNames(), ['Alpha', 'Beta', 'claude-stream']);
+      const select = async (stream: string | null, agent: string | null = null) => {
+        await act(async () =>
+          renderer.root.findByType(Directory).props.onSelect({ stream, agent }),
+        );
+      };
+      await select('team-beta');
+      assert.equal(cards().length, 1, 'the second membership is selectable');
+      assert.equal(
+        renderer.root.findByProps({ className: 'scopebar' }).findByType('strong').props.children,
+        'Beta',
+      );
+      assert.deepEqual(
+        renderer.root
+          .findAllByProps({ className: 'stream-head' })
+          .map((head) => head.findByType('h2').props.children),
+        ['Beta'],
+      );
+      await select('team-beta', shared.agent);
+      assert.equal(
+        renderer.root.findByType(Directory).findAllByProps({ className: 'dir-agent sel' }).length,
+        1,
+        'the same agent in another team is not highlighted',
+      );
+      await act(async () => cards()[0].props.onClick());
+      assert.match(
+        renderer.root
+          .findByType(SessionDetail)
+          .findByProps({ className: 'drawer-sub' })
+          .props.children.join(''),
+        /Alpha, Beta/,
+      );
+      const renamed = {
+        ...shared,
+        teams: [shared.teams[0], { id: 'team-beta', name: 'Beta renamed' }],
+      };
+      await publish('sessions', [renamed, claude], true, total);
+      assert.equal(cards().length, 1, 'renaming a team preserves selection by ID');
+      assert.ok(directoryNames().includes('Beta renamed'));
+      await navigate('Map');
+      assert.equal(renderer.root.findByType(AgentMap).findAllByType('button').length, 1);
+      assert.match(
+        renderer.root.findByProps({ className: 'map-cluster-label' }).props.children.join(''),
+        /Beta renamed/,
+      );
+      await select(null);
+      assert.equal(renderer.root.findByType(AgentMap).findAllByType('button').length, 3);
+      await publish('sessions', [{ ...shared, teams: [] }, claude], true, total);
+      assert.deepEqual(directoryNames(), ['claude-stream', 'No team']);
+      await select('unassigned');
+      await navigate('Board');
+      assert.equal(cards().length, 1, 'clearing membership overrides stale legacy teamId');
+      assert.equal(
+        renderer.root.findByProps({ className: 'stream-head' }).findByType('h2').props.children,
+        'No team',
+      );
+      await act(async () => cards()[0].props.onClick());
+      assert.match(
+        renderer.root
+          .findByType(SessionDetail)
+          .findByProps({ className: 'drawer-sub' })
+          .props.children.join(''),
+        /No team/,
+      );
+      await publish('sessions', [codex, claude]);
+      assert.equal(cards().length, 0, 'legacy team attribution does not match No team');
+      await select(codex.teamId!);
+      assert.deepEqual(cardProviders(), ['codex']);
+      assert.ok(
+        directoryNames().includes('codex-stream'),
+        'legacy sessions retain their team label',
+      );
+    },
+  );
 
   await t.test(
     'replacing dashboard credentials ignores late messages and closure from the old socket',

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type {
   AgentEvent,
   AgentProvider,
+  ActivityTeam,
   Aggregate,
   CumulativeSnapshot,
   SessionState,
@@ -427,6 +428,7 @@ export class Store extends EventEmitter {
     const key = JSON.stringify([
       session.agent,
       session.teamId,
+      session.teams,
       session.repo,
       session.branch,
       session.ticket,
@@ -485,7 +487,10 @@ export class Store extends EventEmitter {
     if (event.model) {
       session.model = event.model;
     }
-    if (event.teamId) {
+    if (event.teams !== undefined) {
+      session.teams = event.teams.map((team) => ({ ...team }));
+      session.teamId = event.teams[0]?.name;
+    } else if (event.teamId) {
       session.teamId = event.teamId;
     }
     if (event.department) {
@@ -753,6 +758,25 @@ export class Store extends EventEmitter {
 
   getSessions(): SessionState[] {
     return [...this.sessions.values()].sort((left, right) => right.lastEventAt - left.lastEventAt);
+  }
+
+  /** Refresh live membership without adding telemetry or changing usage history. */
+  refreshTeams(resolveTeams: (sessionId: string) => ActivityTeam[] | undefined): void {
+    let changed = false;
+    const contexts = new Set([...this.sessions.values(), ...this.sessionContext.values()]);
+    for (const session of contexts) {
+      const teams = resolveTeams(session.sessionId);
+      if (teams === undefined || JSON.stringify(session.teams) === JSON.stringify(teams)) {
+        continue;
+      }
+      session.teams = teams.map((team) => ({ ...team }));
+      session.teamId = teams[0]?.name;
+      this.rememberContext(session, Date.now());
+      changed = true;
+    }
+    if (changed) {
+      this.emit('sessions', this.getSessions(), this.getAggregate());
+    }
   }
 
   getRecentEvents(limit = 100): AgentEvent[] {

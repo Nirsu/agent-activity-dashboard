@@ -6,6 +6,7 @@ import type { Project } from '../analysis/types.js';
 import { minimizeSourceContent, type Source } from '../sources.js';
 import type { SourceRegistration } from './types.js';
 import { fail } from '../analysis/validation.js';
+import { prepareGithubRevision } from '../analysis/github.js';
 
 export const sourceHash = (value: string) => createHash('sha256').update(value).digest('hex');
 const executeFile = promisify(execFile);
@@ -52,6 +53,7 @@ export function makeCapture(
 }
 
 export async function captureGitDocument(project: Project, path: string) {
+  const revision = await prepareGithubRevision(project);
   async function git(args: string[]) {
     const result = await executeFile(
       process.env.BRAIN_GIT_BINARY ?? 'git',
@@ -65,7 +67,7 @@ export async function captureGitDocument(project: Project, path: string) {
     );
     return result.stdout;
   }
-  const commit = (await git(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+  const commit = (await git(['rev-parse', '--verify', `${revision ?? 'HEAD'}^{commit}`])).trim();
   const entry = await git(['ls-tree', commit, '--', path]);
   if (!/^100(?:644|755) blob /.test(entry)) {
     fail('Git specification is missing or is a symbolic link.');

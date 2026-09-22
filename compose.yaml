@@ -7,6 +7,8 @@ services:
       context: .
       target: server
     environment:
+      VIEWER_TOKEN: ${VIEWER_TOKEN:?set VIEWER_TOKEN in .env for dashboard browser access}
+      BRAIN_ADMIN_TOKEN: ${BRAIN_ADMIN_TOKEN:?set a separate BRAIN_ADMIN_TOKEN in .env}
       ANONYMIZE: ${ANONYMIZE:-1}
       ANONYMIZE_SALT: ${ANONYMIZE_SALT:-aad-local-docker}
       RETENTION_DAYS: ${RETENTION_DAYS:-60}

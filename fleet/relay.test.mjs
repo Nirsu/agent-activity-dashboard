@@ -8,6 +8,15 @@ import test from 'node:test';
 import { repositoryAt, selectedRepository, validatePolicy } from './project-policy.mjs';
 import { configureProjects } from './projects.mjs';
 import { startRelay, ProjectFilter } from './relay.mjs';
+process.env.HARMONIE_TOKEN = 'fixture-workstation-token';
+
+test('relay refuses to start without a workstation token before accepting or forwarding events', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    startRelay({ configPath: f.configPath, port: 0, token: '' }),
+    /Set HARMONIE_TOKEN/,
+  );
+});
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'harmonie-relay-'));

@@ -15,7 +15,7 @@ import {
   repositoryAt,
   repositoryContext,
 } from './project-policy.mjs';
-import { RelayOutbox, relayCredentialId } from './relay-outbox.mjs';
+import { RelayOutbox, relayCredentialId, requireAgentToken } from './relay-outbox.mjs';
 
 const relayLimits = createRequire(import.meta.url)('./relay-config.json');
 
@@ -208,10 +208,11 @@ export class ProjectFilter {
 export async function startRelay({
   configPath = defaultConfigPath(),
   port,
-  token = process.env.HARMONIE_TOKEN || process.env.AAD_TOKEN,
+  token = process.env.HARMONIE_TOKEN,
   forward = fetch,
   limits = relayLimits,
 } = {}) {
+  requireAgentToken(token);
   const initial = readPolicy(configPath);
   const credentialId = relayCredentialId(token);
   const filter = new ProjectFilter();
@@ -271,7 +272,7 @@ export async function startRelay({
         return send(200, {
           ok: true,
           service: 'harmonie-project-relay',
-          version: 5,
+          version: 6,
           credentialId,
           configurationId: createHash('sha256').update(resolve(configPath)).digest('hex'),
           projects: policy.projects.length,
@@ -371,7 +372,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.error(
       error.code === 'EADDRINUSE'
         ? 'The local relay port is already in use.'
-        : 'Unable to start the relay. Run agents:setup and check the local configuration.',
+        : 'Unable to start the relay. Set HARMONIE_TOKEN to an Accounts workstation token and check agents:setup.',
     );
     process.exitCode = 1;
   }

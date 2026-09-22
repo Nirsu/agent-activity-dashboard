@@ -425,6 +425,120 @@
 .access-form p {
   font-size: 12px;
 }
+.access-teams {
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.access-teams .access-collection-heading p {
+  margin-top: 7px;
+  font-size: 12px;
+}
+.access-teams .access-collection-heading > button {
+  flex-shrink: 0;
+}
+.access-team-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 22px 20px;
+}
+.access-team-form > label {
+  flex: 1 1 230px;
+}
+.access-team-form .access-actions {
+  padding-bottom: 1px;
+}
+.access-team-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0 22px 20px;
+}
+.access-team-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.access-team-list li > div:first-child {
+  display: grid;
+  flex: 1;
+  min-width: 100px;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+.access-team-list li strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+.access-team-list li span,
+.access-team-list button {
+  font-size: 11px;
+}
+.access-team-list li span {
+  color: var(--text-dim);
+}
+.access-team-list button {
+  min-height: 30px;
+  padding: 5px 8px;
+}
+.access-page .access-teams-empty,
+.access-page .access-teams-hint {
+  padding: 0 22px 20px;
+  font-size: 12px;
+}
+.access-team-selection {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.access-team-selection legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.access-team-options {
+  display: grid;
+  gap: 7px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.access-page .access-team-options label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow-wrap: anywhere;
+}
+.access-team-options label:has(input:checked) {
+  background: #192640;
+  border-color: #5576ad;
+}
+.access-page .access-team-options input {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: #739bff;
+}
+.access-team-selection:disabled .access-team-options {
+  opacity: 0.55;
+}
 .access-section-heading {
   gap: 12px;
 }
@@ -528,10 +642,17 @@
 }
 .access-token-form {
   display: grid;
-  grid-template-columns: minmax(100px, 1fr) 110px;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.8fr);
   gap: 12px;
-  align-items: end;
+  align-items: start;
   margin: 20px 0;
+}
+.access-token-expiration {
+  display: grid;
+  gap: 12px;
+}
+.access-token-form > [role='alert'] {
+  grid-column: 1 / -1;
 }
 .access-token-form button {
   grid-column: 1 / -1;
@@ -667,8 +788,49 @@
 }
 .access-repository-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.access-brain-status {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  margin-top: 12px;
+}
+.access-brain-status p {
+  font-size: 11px;
+}
+.access-brain-status small,
+.access-brain-status a {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.access-brain-status a {
+  color: #9bb9ff;
+}
+.access-brain-registration {
+  padding: 13px 14px;
+  border: 1px solid #344058;
+  border-radius: 8px;
+  background: #172135;
+}
+.access-brain-registration strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+.access-analysis-scope {
+  font-size: 12px;
+}
+.access-analysis-scope > div {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.access-analysis-scope textarea {
+  resize: vertical;
 }
 .access-repository-actions button {
   font-size: 11px;
@@ -796,6 +958,14 @@
   }
 }
 @media (max-width: 760px) {
+  .access-team-list {
+    grid-template-columns: 1fr;
+  }
+  .access-team-list,
+  .access-team-form {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
   .access-page {
     padding: 20px 0 36px;
   }

@@ -10,6 +10,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { z } from 'zod';
 
 async function freePort() {
   const socket = createServer();
@@ -48,7 +51,6 @@ test(
         COGNEE_API_TOKEN: '',
         COGNEE_PASSWORD: '',
         VIEWER_TOKEN: '',
-        INGEST_TOKEN: '',
         COST_LEDGER: '0',
       },
     });
@@ -110,8 +112,22 @@ test('portable developer client reports scoped findings, no conclusion and techn
   };
   let result = {
     id: 'analysis-1',
+    projectId: 'dashboard',
     status: 'succeeded',
+    stage: 'Complete',
     commit: 'a'.repeat(40),
+    analysisMethod: 'static_code_review',
+    coverage: 'scoped_requirements_checked',
+    sources: [
+      {
+        id: citation.sourceId,
+        title: 'Specification',
+        path: 'spec.md',
+        kind: 'code',
+        revision: 'a'.repeat(40),
+      },
+    ],
+    pollAfterMs: null,
     requirements: [{ id: 'R1' }],
     findings: [
       {
@@ -131,28 +147,80 @@ test('portable developer client reports scoped findings, no conclusion and techn
       sourceIds: [citation.sourceId],
       memoryVersion: 'generation-1',
     },
+    codeRetrieval: {
+      strategy: 'on_demand',
+      excerpts: [{ sourceId: 'captured-code', startLine: 1, endLine: 10 }],
+      searches: [{ query: 'summary', paths: ['hooks/hook.js'], truncated: false }],
+    },
   };
   const server = createHttpServer(async (request, response) => {
+    if (request.headers.authorization !== 'Bearer test-agent-token') {
+      response.writeHead(401).end();
+      return;
+    }
+    if (request.method !== 'POST' || request.url !== '/api/brain/mcp') {
+      response.writeHead(405).end();
+      return;
+    }
     const chunks = [];
     for await (const chunk of request) {
       chunks.push(chunk);
     }
-    requests.push({
-      path: request.url,
-      token: request.headers['x-aad-token'],
-      body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined,
-    });
-    response.setHeader('Content-Type', 'application/json');
-    response.end(
-      JSON.stringify(
-        request.method === 'POST' ? { id: 'analysis-1', requestTimeoutMs: 0 } : result,
-      ),
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (body.method === 'tools/call') {
+      requests.push({ path: request.url, token: request.headers.authorization, body: body.params });
+    }
+    const mcp = new McpServer({ name: 'brain-fixture', version: '1.0.0' });
+    mcp.registerTool('brain_list_projects', { inputSchema: z.object({}).strict() }, () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            projects: [{ id: 'dashboard', scope: 'Review the configured project scope.' }],
+          }),
+        },
+      ],
+    }));
+    mcp.registerTool(
+      'brain_start_analysis',
+      {
+        inputSchema: z
+          .object({
+            projectId: z.string().min(1),
+            commit: z.string().regex(/^[a-f0-9]{40}$/),
+            baseCommit: z
+              .string()
+              .regex(/^[a-f0-9]{40}$/)
+              .optional(),
+            feature: z.string().trim().min(1),
+          })
+          .strict(),
+      },
+      () => ({
+        content: [
+          { type: 'text', text: JSON.stringify({ id: 'analysis-1', requestTimeoutMs: 0 }) },
+        ],
+      }),
     );
+    mcp.registerTool(
+      'brain_get_analysis',
+      {
+        inputSchema: z.object({ analysisId: z.string().min(1) }).strict(),
+      },
+      () => ({ content: [{ type: 'text', text: JSON.stringify(result) }] }),
+    );
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    await mcp.connect(transport);
+    response.once('close', () => void mcp.close());
+    await transport.handleRequest(request, response, body);
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try {
-    const runClient = () =>
+    const runClient = (token = 'test-agent-token', selectedFeature = 'Check hook summaries') =>
       promisify(execFile)(
         process.execPath,
         [
@@ -160,7 +228,7 @@ test('portable developer client reports scoped findings, no conclusion and techn
           'dashboard',
           'a'.repeat(40),
           'b'.repeat(40),
-          'Check hook summaries',
+          ...(selectedFeature === null ? [] : [selectedFeature]),
         ],
         {
           cwd: tmpdir(),
@@ -169,21 +237,28 @@ test('portable developer client reports scoped findings, no conclusion and techn
           env: {
             ...process.env,
             BRAIN_URL: `http://127.0.0.1:${server.address().port}`,
-            BRAIN_ACCESS_TOKEN: 'test-agent-token',
+            HARMONIE_TOKEN: token,
           },
         },
       );
     const { stdout } = await runClient();
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], {
-      path: '/api/brain/analyses',
-      token: 'test-agent-token',
+      path: '/api/brain/mcp',
+      token: 'Bearer test-agent-token',
       body: {
-        projectId: 'dashboard',
-        commit: 'a'.repeat(40),
-        baseCommit: 'b'.repeat(40),
-        feature: 'Check hook summaries',
+        name: 'brain_start_analysis',
+        arguments: {
+          projectId: 'dashboard',
+          commit: 'a'.repeat(40),
+          baseCommit: 'b'.repeat(40),
+          feature: 'Check hook summaries',
+        },
       },
+    });
+    assert.deepEqual(requests[1].body, {
+      name: 'brain_get_analysis',
+      arguments: { analysisId: 'analysis-1' },
     });
     const summary = JSON.parse(stdout.slice(stdout.indexOf('{')));
     assert.equal(summary.coverage, 'scoped_requirements_checked');
@@ -195,11 +270,32 @@ test('portable developer client reports scoped findings, no conclusion and techn
     assert.equal(summary.humanReviewRequired, true);
     assert.deepEqual(summary.results[0].decision, citation);
     assert.equal(summary.retrieval.memoryVersion, 'generation-1');
+    assert.deepEqual(summary.codeRetrieval, result.codeRetrieval);
+    assert.deepEqual(summary.sources, result.sources);
     assert.ok(!stdout.includes('test-agent-token'));
+    await assert.rejects(runClient(''), (error) => {
+      assert.match(error.stderr, /Set HARMONIE_TOKEN/);
+      return true;
+    });
+    assert.equal(requests.length, 2, 'missing credentials must fail before sending a request');
+    await assert.rejects(runClient('invalid-test-credential'), (error) => {
+      assert.doesNotMatch(error.stderr, /invalid-test-credential/);
+      return true;
+    });
+    await runClient('test-agent-token', null);
+    assert.equal(requests[2].body.name, 'brain_list_projects');
+    assert.equal(requests[3].body.name, 'brain_start_analysis');
+    assert.equal(requests[3].body.arguments.feature, 'Review the configured project scope.');
 
     const explanation =
       'No applicable requirements extracted: The specification covers another feature. No conclusion about the code.';
-    result = { ...result, requirements: [], findings: [], events: [{ message: explanation }] };
+    result = {
+      ...result,
+      coverage: 'no_conclusion',
+      requirements: [],
+      findings: [],
+      noConclusionReason: explanation,
+    };
     const emptyOutput = (await runClient()).stdout;
     const emptySummary = JSON.parse(emptyOutput.slice(emptyOutput.indexOf('{')));
     assert.equal(emptySummary.status, 'succeeded', 'Technical completion still exits successfully');
@@ -208,6 +304,15 @@ test('portable developer client reports scoped findings, no conclusion and techn
     assert.equal(emptySummary.explanation, explanation);
     assert.equal(emptySummary.humanReviewRequired, true);
     assert.deepEqual(emptySummary.results, []);
+
+    result = { ...result, noConclusionReason: undefined };
+    const fallbackOutput = (await runClient()).stdout;
+    const fallbackSummary = JSON.parse(fallbackOutput.slice(fallbackOutput.indexOf('{')));
+    assert.equal(
+      fallbackSummary.explanation,
+      'No applicable requirements were extracted. No conclusion about the code.',
+    );
+    assert.equal(fallbackSummary.humanReviewRequired, true);
 
     result = { ...result, status: 'failed', error: 'Provider unavailable.' };
     await assert.rejects(runClient(), (error) => {

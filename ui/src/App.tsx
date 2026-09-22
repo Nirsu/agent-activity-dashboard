@@ -13,6 +13,7 @@ import { Accounts } from './components/Accounts';
 import { Projects } from './components/Projects';
 import type { AgentProvider } from './types';
 import { groupSessions } from '../../server/src/session-hierarchy';
+import { matchesTeam, selectedTeamLabel } from './teams';
 
 type View = 'board' | 'map' | 'trends' | 'brain' | 'accounts' | 'projects';
 type ProviderFilter = 'all' | AgentProvider;
@@ -52,7 +53,7 @@ export default function App() {
 
   const hierarchy = useMemo(() => groupSessions(providerSessions), [providerSessions]);
   const matches = (s: (typeof sessions)[number]) =>
-    (!selection.stream || (s.teamId ?? 'unassigned') === selection.stream) &&
+    matchesTeam(s, selection.stream) &&
     (!selection.agent || (s.agent ?? s.sessionId.slice(0, 8)) === selection.agent);
   // Apply directory filters to the parent, preserving its complete session tree.
   const groups = hierarchy.groups.filter((group) => matches(group.root));
@@ -69,7 +70,7 @@ export default function App() {
       group.root.sessionId === selectedId ||
       group.children.some((child) => child.sessionId === selectedId),
   );
-  const scopeLabel = selection.agent ?? selection.stream ?? 'All streams';
+  const scopeLabel = selection.agent ?? selectedTeamLabel(selection.stream, directorySessions);
   const hasFilters = provider !== 'all' || Boolean(selection.stream || selection.agent);
   const sourceAggregate =
     activeProvider === 'all' ? aggregate : (providerAggregates?.[activeProvider] ?? null);
@@ -197,13 +198,18 @@ export default function App() {
               {view === 'trends' ? (
                 <Trends />
               ) : view === 'map' ? (
-                <AgentMap sessions={directorySessions.filter(matches)} onSelect={setSelectedId} />
+                <AgentMap
+                  sessions={directorySessions.filter(matches)}
+                  selectedTeam={selection.stream}
+                  onSelect={setSelectedId}
+                />
               ) : (
                 <LiveSessions
                   groups={groups}
                   unlinked={unlinked}
                   hasFilters={hasFilters}
                   providerLabel={provider === 'all' ? 'agent' : providerLabel}
+                  selectedTeam={selection.stream}
                   onSelect={setSelectedId}
                   onClear={() => {
                     setProvider('all');

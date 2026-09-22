@@ -1,17 +1,17 @@
 import { useRef, useState } from 'react';
 import { setBrainAdminToken } from './brain/api';
 import { AdministratorAccess } from './access/AdministratorAccess';
-import { useAccounts } from './access/useAccounts';
+import { useAccounts, type Repository } from './access/useAccounts';
 import {
   AccessEmpty,
   AccessHeader,
-  AccessIcon,
   AccessPolicy,
-  AccessStatus,
   AccessToolbar,
   type AccessFilter,
 } from './access/AccessUI';
 import { RepositoryEditor } from './access/RepositoryEditor';
+import { repositoryBrainStatus } from './access/RepositoryBrainStatus';
+import { RepositoryCard } from './access/RepositoryCard';
 import './Accounts.css';
 
 export function Projects() {
@@ -24,14 +24,18 @@ export function Projects() {
   const state = access.state;
   const repositories = state?.repositories ?? [];
   const enabled = repositories.filter((repository) => repository.enabled).length;
+  const ready = repositories.filter(
+    (repository) => repositoryBrainStatus(repository).state === 'ready',
+  ).length;
   const visible = repositories.filter((repository) => {
     const projectName =
       state?.projects.find((project) => project.id === repository.brainProjectId)?.name ??
       repository.brainProjectId ??
       '';
+    const brainStatus = repositoryBrainStatus(repository);
     return (
       (filter === 'all' || repository.enabled === (filter === 'enabled')) &&
-      `${repository.name} ${repository.remote} ${projectName}`
+      `${repository.name} ${repository.remote} ${projectName} ${brainStatus.label} ${brainStatus.message}`
         .toLowerCase()
         .includes(query.trim().toLowerCase())
     );
@@ -40,11 +44,30 @@ export function Projects() {
     setEditor(null);
     addButton.current?.focus();
   };
+  const checkRepository = async (repository: Repository) => {
+    setNotice('');
+    const checked = await access.checkRepository(repository.id);
+    if (checked) {
+      setNotice(checked.brainStatus?.message ?? 'Brain access check completed.');
+    }
+  };
+  const toggleRepository = (repository: Repository) =>
+    access.saveRepository(
+      {
+        name: repository.name,
+        remote: repository.remote,
+        enabled: !repository.enabled,
+        ...(repository.brainProjectId ? { brainProjectId: repository.brainProjectId } : {}),
+        ...(repository.brainScope !== undefined ? { brainScope: repository.brainScope } : {}),
+        ...(repository.brainCodePaths ? { brainCodePaths: repository.brainCodePaths } : {}),
+      },
+      repository.id,
+    );
   return (
     <main className="access-page">
       <AccessHeader
         title="Projects"
-        description="Manage the repositories connected to your workspace."
+        description="Connect repositories for agent activity and Harmony Brain analyses."
         busy={access.busy}
         unlocked={Boolean(state)}
         refresh={() => void access.refresh()}
@@ -96,10 +119,10 @@ export function Projects() {
               </strong>
             </div>
             <div>
-              <span>Linked to Brain</span>
+              <span>Brain ready</span>
               <strong>
-                {repositories.filter((repository) => repository.brainProjectId).length}
-                <small>project associations</small>
+                {ready}
+                <small>code & references verified</small>
               </strong>
             </div>
           </div>
@@ -149,7 +172,8 @@ export function Projects() {
                     </button>
                   }
                 >
-                  Add a Git repository to manage where agent activity comes from.
+                  Add a GitHub repository to collect agent activity and register its Brain project
+                  automatically.
                 </AccessEmpty>
               ) : !visible.length ? (
                 <AccessEmpty
@@ -171,62 +195,22 @@ export function Projects() {
               ) : (
                 <div className="access-repositories">
                   {visible.map((repository) => (
-                    <article
-                      className={`access-repository${editor === repository.id ? ' selected' : ''}`}
+                    <RepositoryCard
                       key={repository.id}
-                    >
-                      <span className="access-repository-icon">
-                        <AccessIcon name="folder" />
-                      </span>
-                      <div className="access-repository-main">
-                        <div className="access-repository-title">
-                          <h3>{repository.name}</h3>
-                          <AccessStatus tone={repository.enabled ? 'good' : 'muted'}>
-                            {repository.enabled ? 'Enabled' : 'Disabled'}
-                          </AccessStatus>
-                        </div>
-                        <p className="repository-remote">{repository.remote}</p>
-                        <span
-                          className={`access-project-link${repository.brainProjectId ? ' linked' : ''}`}
-                        >
-                          {repository.brainProjectId
-                            ? `Brain: ${state.projects.find((project) => project.id === repository.brainProjectId)?.name ?? repository.brainProjectId}`
-                            : 'Activity only'}
-                        </span>
-                      </div>
-                      <div className="access-repository-actions">
-                        <button
-                          disabled={access.busy}
-                          aria-label={`Edit repository ${repository.name}`}
-                          onClick={() => {
-                            setEditor(repository.id);
-                            setNotice('');
-                          }}
-                        >
-                          Edit repository
-                        </button>
-                        <button
-                          className="access-quiet"
-                          disabled={access.busy}
-                          aria-label={`${repository.enabled ? 'Disable' : 'Enable'} repository ${repository.name}`}
-                          onClick={() =>
-                            void access.saveRepository(
-                              {
-                                name: repository.name,
-                                remote: repository.remote,
-                                enabled: !repository.enabled,
-                                ...(repository.brainProjectId
-                                  ? { brainProjectId: repository.brainProjectId }
-                                  : {}),
-                              },
-                              repository.id,
-                            )
-                          }
-                        >
-                          {repository.enabled ? 'Disable repository' : 'Enable repository'}
-                        </button>
-                      </div>
-                    </article>
+                      repository={repository}
+                      brainProjectName={
+                        state.projects.find((project) => project.id === repository.brainProjectId)
+                          ?.name
+                      }
+                      busy={access.busy}
+                      selected={editor === repository.id}
+                      edit={() => {
+                        setEditor(repository.id);
+                        setNotice('');
+                      }}
+                      check={() => void checkRepository(repository)}
+                      toggle={() => void toggleRepository(repository)}
+                    />
                   ))}
                 </div>
               )}
@@ -248,7 +232,11 @@ export function Projects() {
                       closeEditor();
                       setQuery('');
                       setFilter('all');
-                      setNotice(id ? 'Repository updated.' : 'Project added to your workspace.');
+                      setNotice(
+                        id
+                          ? 'Repository updated.'
+                          : 'Project registered for activity and Brain. Check Brain access to verify readiness.',
+                      );
                     }
                   }}
                 />
@@ -269,12 +257,14 @@ export function Projects() {
                 <a href="#accounts">Manage accounts & workstation tokens →</a>
               </div>
               <div>
-                <h3>02 · Enable code analyses</h3>
+                <h3>02 · Check Brain readiness</h3>
                 <p>
-                  Repository authorization enables activity collection. For code analyses, register
-                  the server-side Git checkout and approved references in the Brain project
-                  configuration. All active developers share access.
+                  Every project is registered with Brain automatically. Configure GitHub read access
+                  once on the server, approve the project references in Memory, then check access.
+                  The developer agent submits the ticket and local changes through MCP; Brain reads
+                  related GitHub code when needed. All active developers share access.
                 </p>
+                <a href="#brain/memory">Manage approved references →</a>
               </div>
             </div>
           </details>

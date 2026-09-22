@@ -168,7 +168,6 @@ async function main() {
   }
 
   const headers = { 'content-type': 'application/json' };
-  if (process.env.AAD_TOKEN) headers['authorization'] = `Bearer ${process.env.AAD_TOKEN}`;
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -181,7 +180,9 @@ async function main() {
     });
     await response.body?.cancel();
     if (!response.ok) {
-      console.error(`Harmonie telemetry was not accepted (HTTP ${response.status}). Check the local relay.`);
+      console.error(
+        `Harmonie telemetry was not accepted (HTTP ${response.status}). Check the local relay.`,
+      );
     }
   } catch {
     console.error('Harmonie telemetry delivery was not confirmed. Check the local relay.');

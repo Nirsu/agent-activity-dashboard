@@ -103,7 +103,7 @@ test('search sanitizes complete files before returning multiline secret matches'
   const f = await fixture(t);
   const content = [
     'export const example = `',
-    '-----BEGIN PRIVATE KEY-----',
+    ['-----BEGIN', 'PRIVATE KEY-----'].join(' '),
     'MATCH_SYNTHETIC_KEY_MATERIAL',
     '-----END PRIVATE KEY-----',
     '`;',
@@ -162,6 +162,7 @@ test('workstation tokens are redacted from Git reads, searches and submitted ove
 test('code retrieval respects scope, excludes unsafe paths and limits ranges and requests', async (t) => {
   const f = await fixture(t);
   const reader = new CodeReader(f.run, f.project, f.files);
+  assert.equal(reader.context.maxRequestsPerRound, brainConfig.codeRetrieval.maxRequestsPerRound);
   await reader.requests([{ action: 'search', query: 'PRIVATE_SENTINEL' }]);
   assert.deepEqual(reader.context.searches[0].matches, []);
   for (const path of ['src/.env', 'outside.ts', 'spec.md', '../outside.ts', 'src/missing.ts']) {
@@ -188,9 +189,93 @@ test('code retrieval respects scope, excludes unsafe paths and limits ranges and
         query: 'a',
       })),
     ),
-    /List/,
+    new RegExp(
+      `requested ${brainConfig.codeRetrieval.maxRequestsPerRound + 1} operations.*limit is ${brainConfig.codeRetrieval.maxRequestsPerRound} operations per round`,
+    ),
   );
   await assert.rejects(reader.requests([{ action: 'search', query: 'one\ntwo' }]), /literal line/);
+});
+
+test('large stored overlays do not consume evidence source counts until files are read', async (t) => {
+  const f = await fixture(t);
+  const submitted = validateSubmittedFiles(
+    Array.from({ length: 65 }, (_, index) => ({
+      path: `src/submitted-${index}.ts`,
+      content: 'value',
+    })),
+    f.project,
+  );
+  applySubmittedFiles(f.run, f.project, submitted);
+  const reader = new CodeReader(f.run, f.project, f.files, submitted);
+  const previous = brainConfig.analysis.maxSources;
+  brainConfig.analysis.maxSources = 3;
+  try {
+    assert.equal(reader.sources.length, 0);
+    await reader.requests([
+      { action: 'read', path: 'src/submitted-0.ts', startLine: 1, endLine: 1 },
+      { action: 'read', path: 'src/submitted-1.ts', startLine: 1, endLine: 1 },
+    ]);
+    assert.equal(reader.sources.length, 2);
+    await reader.requests([
+      { action: 'read', path: 'src/submitted-0.ts', startLine: 1, endLine: 1 },
+    ]);
+    await assert.rejects(
+      reader.requests([{ action: 'read', path: 'src/submitted-2.ts', startLine: 1, endLine: 1 }]),
+      /4 evidence sources.*3 sources.*analysis.maxSources/,
+    );
+    assert.equal(reader.sources.length, 2, 'rejected reads cannot become citation evidence');
+    assert.equal(f.run.sources.filter((source) => source.status === 'observed').length, 65);
+  } finally {
+    brainConfig.analysis.maxSources = previous;
+  }
+});
+
+test('read excerpts enforce UTF-8 evidence bytes without limiting stored snapshots', async (t) => {
+  const f = await fixture(t);
+  const submitted = validateSubmittedFiles(
+    [
+      { path: 'src/a.ts', content: 'ééééé' },
+      { path: 'src/b.ts', content: 'é' },
+    ],
+    f.project,
+  );
+  applySubmittedFiles(f.run, f.project, submitted);
+  const reader = new CodeReader(f.run, f.project, f.files, submitted);
+  const previous = brainConfig.analysis.maxSourceBytes;
+  brainConfig.analysis.maxSourceBytes = 10;
+  try {
+    await reader.requests([{ action: 'read', path: 'src/a.ts', startLine: 1, endLine: 1 }]);
+    await reader.requests([{ action: 'read', path: 'src/a.ts', startLine: 1, endLine: 1 }]);
+    await assert.rejects(
+      reader.requests([{ action: 'read', path: 'src/b.ts', startLine: 1, endLine: 1 }]),
+      /12 UTF-8 bytes.*10 bytes.*analysis.maxSourceBytes/,
+    );
+    assert.equal(reader.sources.length, 1);
+    assert.equal(f.run.codeRetrieval!.excerpts.length, 1);
+    assert.ok(f.run.sources.some((source) => source.path === 'src/b.ts'));
+  } finally {
+    brainConfig.analysis.maxSourceBytes = previous;
+  }
+});
+
+test('repository catalogs prioritize changed files and keep truncated files readable', async (t) => {
+  const f = await fixture(t);
+  const submitted = validateSubmittedFiles(
+    [{ path: 'src/z-last.ts', content: 'export const latest = true;' }],
+    f.project,
+  );
+  applySubmittedFiles(f.run, f.project, submitted);
+  const reader = new CodeReader(f.run, f.project, f.files, submitted);
+  const previous = brainConfig.codeRetrieval.maxCatalogFiles;
+  brainConfig.codeRetrieval.maxCatalogFiles = 1;
+  try {
+    assert.deepEqual(reader.context.files, ['src/z-last.ts']);
+    assert.equal(reader.context.catalogTruncated, true);
+    await reader.requests([{ action: 'read', path: 'src/main.ts', startLine: 1, endLine: 1 }]);
+    assert.equal(reader.sources[0].path, 'src/main.ts');
+  } finally {
+    brainConfig.codeRetrieval.maxCatalogFiles = previous;
+  }
 });
 
 test('submitted code replaces baseline search results, deletions stay absent and new files can be read', async (t) => {

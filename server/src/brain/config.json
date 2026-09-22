@@ -7,6 +7,7 @@
   },
   "git": {
     "timeoutMs": 15000,
+    "fetchTimeoutMs": 120000,
     "maxBufferBytes": 2000000
   },
   "analysis": {
@@ -36,8 +37,12 @@
     "maxGitPathCharacters": 300,
     "maxLocalPathCharacters": 500
   },
+  "submission": {
+    "maxFiles": 500,
+    "maxBytes": 10000000,
+    "maxFileBytes": 2000000
+  },
   "codeRetrieval": {
-    "maxSubmissionBytes": 400000,
     "maxRounds": 5,
     "maxRequestsPerRound": 4,
     "initialFiles": 3,
@@ -106,7 +111,7 @@
     "completionGraceMs": 60000
   },
   "mcp": {
-    "maxRequestBytes": 500000
+    "maxRequestBytes": 64000000
   },
   "launcher": {
     "shutdownTimeoutMs": 10000,

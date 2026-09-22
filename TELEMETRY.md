@@ -37,6 +37,8 @@ the client hooks there. Internal sessions without a reported parent remain unlin
 
 Use the repeatable installer in [fleet/SETUP.md](fleet/SETUP.md):
 `npm run agents:setup -- --url http://127.0.0.1:4318 --apply`.
+First issue a workstation token in **Accounts** and provide `HARMONIE_TOKEN` to
+the environment launching the clients and relay. This is required on localhost too.
 It preserves unrelated client configuration, backs up changed files, and installs
 both clients without duplicating hooks. The manual configuration follows below.
 
@@ -73,8 +75,8 @@ OTEL_METRICS_INCLUDE_SESSION_ID=true
 ```
 
 Both delta and cumulative Claude metric exports are supported. Do not change the
-temporality mid-session. Set `AAD_TOKEN` in the relay environment to the dashboard's
-`INGEST_TOKEN` if used. Add `team.id` / `department` to `OTEL_RESOURCE_ATTRIBUTES`
+temporality mid-session. The relay authenticates upstream requests using the
+workstation's `HARMONIE_TOKEN`. Add `team.id` / `department` to `OTEL_RESOURCE_ATTRIBUTES`
 for streams, and the `AAD_PROJECT_ID`, `AAD_TICKET` and `AAD_WORK_ITEM_ID` hook
 variables to link work. Unlinked usage is retained and reported as unattributed.
 

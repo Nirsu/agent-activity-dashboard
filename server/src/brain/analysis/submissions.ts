@@ -3,12 +3,20 @@ import { brainConfig } from '../config.js';
 import { makeSource, minimizeSourceContent } from '../sources.js';
 import { isAllowedCodePath, requireRepoPath } from './projects.js';
 import type { AnalysisRun, Project, SubmittedFile } from './types.js';
-import { fail, requireList, requireObject } from './validation.js';
+import { fail, requireObject } from './validation.js';
 
 export function validateSubmittedFiles(input: unknown, project: Project): SubmittedFile[] {
+  if (!Array.isArray(input)) {
+    fail('Submitted files must be an array of full file contents or deletions.');
+  }
+  if (input.length > brainConfig.submission.maxFiles) {
+    fail(
+      `Submitted snapshot contains ${input.length} files; the configured limit is ${brainConfig.submission.maxFiles} files (submission.maxFiles).`,
+    );
+  }
   let bytes = 0;
   const seen = new Set<string>();
-  const files = requireList(input, brainConfig.analysis.maxSources).map((value) => {
+  const files = input.map((value) => {
     const entry = requireObject(value);
     const path = requireRepoPath(entry.path);
     if (!isAllowedCodePath(project, path) || seen.has(path)) {
@@ -19,15 +27,26 @@ export function validateSubmittedFiles(input: unknown, project: Project): Submit
       fail('Supply full file content, or null for a deleted file.');
     }
     if (typeof entry.content === 'string') {
-      bytes += Buffer.byteLength(entry.content);
-      if (entry.content.includes('\0') || bytes > brainConfig.codeRetrieval.maxSubmissionBytes) {
-        fail('Submitted code is too large or binary. Narrow the change.');
+      const fileBytes = Buffer.byteLength(entry.content, 'utf8');
+      if (entry.content.includes('\0')) {
+        fail(`Submitted file ${path} contains binary content.`);
       }
+      if (fileBytes > brainConfig.submission.maxFileBytes) {
+        fail(
+          `Submitted file ${path} contains ${fileBytes} UTF-8 bytes; the configured limit is ${brainConfig.submission.maxFileBytes} bytes per file (submission.maxFileBytes).`,
+        );
+      }
+      bytes += fileBytes;
     }
     return { path, content: entry.content === null ? null : minimizeSourceContent(entry.content) };
   });
   if (!files.length) {
     fail('Submit at least one changed code file.');
+  }
+  if (bytes > brainConfig.submission.maxBytes) {
+    fail(
+      `Submitted snapshot contains ${bytes} UTF-8 bytes; the configured limit is ${brainConfig.submission.maxBytes} bytes (submission.maxBytes).`,
+    );
   }
   return files.sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -41,7 +60,9 @@ export function applySubmittedFiles(run: AnalysisRun, project: Project, files: S
   const submission = submissionInfo(run.commit!, files);
   const { id } = submission;
   const paths = files.map((file) => file.path);
-  // An overlay is evidence only. Never write it to the registered checkout or memory specifications.
+  // Preserve the complete overlay for replay and provenance. Only explicitly read excerpts
+  // become model evidence; snapshot size is independent of the evidence budget.
+  // Never write the overlay to the registered checkout or memory specifications.
   run.sources = run.sources.filter(
     (source) => source.status === 'published' || !paths.includes(source.path),
   );
@@ -55,15 +76,6 @@ export function applySubmittedFiles(run: AnalysisRun, project: Project, files: S
       properties: { captureMode: 'agent-submitted', baselineCommit: run.commit, snapshotId: id },
     };
     run.sources.push(source);
-  }
-  if (
-    run.sources.length > brainConfig.analysis.maxSources ||
-    run.sources
-      .filter((source) => source.status === 'observed')
-      .reduce((total, source) => total + Buffer.byteLength(source.content), 0) >
-      brainConfig.codeRetrieval.maxSubmissionBytes
-  ) {
-    fail('The submitted snapshot exceeds the capture budget. Narrow the submitted change.');
   }
   run.submission = submission;
   run.changedFiles = paths;

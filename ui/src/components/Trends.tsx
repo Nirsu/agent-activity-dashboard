@@ -18,7 +18,13 @@ interface TrendsData {
   enabled: boolean;
   backend?: string;
   days: Day[];
-  byStream: Array<{ teamId: string; costUsd: number; tokens: number; costKnown: boolean }>;
+  byStream: Array<{
+    teamId: string;
+    teamName?: string;
+    costUsd: number;
+    tokens: number;
+    costKnown: boolean;
+  }>;
 }
 
 const WIDTH = 720;
@@ -32,8 +38,14 @@ export function Trends() {
   useEffect(() => {
     const load = () =>
       apiFetch('/api/trends?days=14')
-        .then((r) => { if (!r.ok) throw new Error('History request failed'); return r.json(); })
-        .then((data) => { setD(data); setError(false); })
+        .then((r) => {
+          if (!r.ok) throw new Error('History request failed');
+          return r.json();
+        })
+        .then((data) => {
+          setD(data);
+          setError(false);
+        })
         .catch(() => setError(true));
     load();
     const t = setInterval(load, 30_000);
@@ -57,11 +69,15 @@ export function Trends() {
   if (d && !d.enabled)
     return (
       <div className="trends-empty">
-        History is unavailable on this server. Trends appear once
-        the server persists events.
+        History is unavailable on this server. Trends appear once the server persists events.
       </div>
     );
-  if (!d) return <div className="trends-empty">{error ? 'History could not be loaded. Retrying…' : 'Loading trends…'}</div>;
+  if (!d)
+    return (
+      <div className="trends-empty">
+        {error ? 'History could not be loaded. Retrying…' : 'Loading trends…'}
+      </div>
+    );
 
   const days = d.days;
   const maxCost = Math.max(0.0001, ...days.map((x) => x.costUsd));
@@ -73,21 +89,33 @@ export function Trends() {
     <div className="trends">
       {error && <p role="status">History refresh failed. Showing the last received data.</p>}
       <p>
-        {d.backend === 'postgres' ? 'PostgreSQL' : 'SQLite'} history · all providers and streams · known usage only.
-        {' '}{totals.unknown} usage observations have an unknown cost.
-        {' '}{usd(totals.unattributed)} is not linked to a ticket or work item.
-        {' '}Session totals count daily appearances; they are not unique over the whole period.
+        {d.backend === 'postgres' ? 'PostgreSQL' : 'SQLite'} history · all providers and streams ·
+        known usage only. {totals.unknown} usage observations have an unknown cost.{' '}
+        {usd(totals.unattributed)} is not linked to a ticket or work item. Session totals count
+        daily appearances; they are not unique over the whole period.
       </p>
       <div className="trends-tiles">
-        <Tile label="Known cost · 14d" value={totals.costKnown ? usd(totals.cost) : 'Unavailable'} accent />
-        <Tile label="Known tokens · 14d" value={totals.tokensKnown ? tokens(totals.tokens) : 'Unavailable'} />
+        <Tile
+          label="Known cost · 14d"
+          value={totals.costKnown ? usd(totals.cost) : 'Unavailable'}
+          accent
+        />
+        <Tile
+          label="Known tokens · 14d"
+          value={totals.tokensKnown ? tokens(totals.tokens) : 'Unavailable'}
+        />
         <Tile label="Prompts · 14d" value={String(totals.prompts)} />
         <Tile label="Sessions · 14d" value={String(totals.sessions)} />
       </div>
 
       <div className="trends-chart-card">
         <div className="trends-chart-title">Known cost per day · missing usage is excluded</div>
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="trends-svg" role="img" aria-label="Known cost per day">
+        <svg
+          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          className="trends-svg"
+          role="img"
+          aria-label="Known cost per day"
+        >
           {days.map((x, i) => {
             const h = (x.costUsd / maxCost) * chartH;
             const bx = PAD.l + i * bw;
@@ -117,15 +145,23 @@ export function Trends() {
       </div>
 
       <div className="trends-chart-card">
-        <div className="trends-chart-title">Cost by stream · 14d</div>
+        <div className="trends-chart-title">Cost by team · 14d</div>
+        <p className="trends-empty-inline">
+          Shared activity appears in each team. Overall totals count it once.
+        </p>
         {d.byStream.length === 0 && <div className="trends-empty-inline">No data yet.</div>}
         {d.byStream.map((s) => (
           <div key={s.teamId} className="trends-stream-row">
-            <span className="trends-stream-name">{s.teamId}</span>
+            <span className="trends-stream-name">{s.teamName ?? s.teamId}</span>
             <div className="trends-stream-bar">
-              <div className="trends-stream-fill" style={{ width: `${(s.costUsd / maxStreamCost) * 100}%` }} />
+              <div
+                className="trends-stream-fill"
+                style={{ width: `${(s.costUsd / maxStreamCost) * 100}%` }}
+              />
             </div>
-            <span className="trends-stream-val">{s.costKnown ? usd(s.costUsd) : 'Unavailable'}</span>
+            <span className="trends-stream-val">
+              {s.costKnown ? usd(s.costUsd) : 'Unavailable'}
+            </span>
           </div>
         ))}
       </div>

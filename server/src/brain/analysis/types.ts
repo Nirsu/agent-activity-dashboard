@@ -1,6 +1,7 @@
 import type { Source } from '../sources.js';
 import type { MemoryService } from '../memory/service.js';
 import type { RetrievedEvidence } from '../memory/types.js';
+import type { BrainProjectStatus } from '../../access/repositories.js';
 
 export type Project = {
   id: string;
@@ -9,6 +10,8 @@ export type Project = {
   repoPath: string;
   codePaths: string[];
   specs: { kind: 'git'; path: string }[];
+  repositoryRemote?: string;
+  enabled?: boolean;
 };
 
 export type Citation = {
@@ -171,6 +174,8 @@ export type ModelCall = (
 export type BrainAgentsOptions = {
   dbPath?: string;
   projectsPath?: string;
+  loadProjects?: () => Promise<Project[]>;
+  projectStatus?: (projectId: string) => BrainProjectStatus | undefined;
   model?: string;
   apiKey?: string;
   requestTimeoutMs?: number;

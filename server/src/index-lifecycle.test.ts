@@ -15,6 +15,16 @@ process.env.COST_LEDGER = '0';
 
 const { buildApp } = await import('./index.js');
 const { history } = await import('./db.js');
+const { AccessStore } = await import('./access/store.js');
+const access = new AccessStore(resolve(directory, 'access.db'));
+await access.init();
+const account = await access.saveAccount(
+  { name: 'Lifecycle fixture', email: 'lifecycle@example.test', teamIds: [], enabled: true },
+  'test',
+);
+const issued = await access.issue(account.id, 'Lifecycle workstation', null, 'test');
+const agentHeaders = { authorization: `Bearer ${issued.secret}` };
+await access.close();
 
 after(async () => {
   await rm(directory, { recursive: true, force: true });
@@ -55,6 +65,7 @@ test('health checks return HTTP 503 after an ingestion persistence failure', asy
     const response = await app.inject({
       method: 'POST',
       url: '/activity',
+      headers: agentHeaders,
       payload: { event: 'session_start', session_id: 'write-failure', provider: 'codex' },
     });
     assert.equal(response.statusCode, 503);
@@ -77,6 +88,7 @@ test('a failed second build does not close the history shared by a running appli
     const response = await app.inject({
       method: 'POST',
       url: '/activity',
+      headers: agentHeaders,
       payload: { event: 'session_start', session_id: 'still-alive', provider: 'codex' },
     });
     assert.equal(response.statusCode, 200, response.body);

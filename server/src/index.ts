@@ -20,6 +20,7 @@ import { registerBrain } from './brain.js';
 import { isBrainCallback } from './brain/access.js';
 import { AccessStore } from './access/store.js';
 import { registerAccessRoutes } from './access/routes.js';
+import { ProjectRegistry } from './brain/project-registry.js';
 import { attributeEvent } from './access/identity.js';
 import { normalizeRepositoryRemote } from './access/repositories.js';
 import type { FastifyRequest } from 'fastify';
@@ -84,6 +85,13 @@ export function presentedToken(req: { headers: Record<string, unknown> }): strin
   return undefined;
 }
 
+function isLocalRequest(request: FastifyRequest) {
+  return (
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip) &&
+    /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(request.headers.host ?? '')
+  );
+}
+
 async function acquireHistory(): Promise<void> {
   historyUsers += 1;
   const initialization = historyLifecycle.then(async () => {
@@ -139,7 +147,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.decorateRequest('accessPrincipal', null);
   app.decorateRequest('authorizedRepository', null);
   function ingestEvent(event: AgentEvent, request: FastifyRequest) {
-    const attributed = attributeEvent(event, request.accessPrincipal);
+    const principal = request.accessPrincipal;
+    // Async enrichment can finish after an administrator changes team memberships.
+    const attributed = attributeEvent(
+      event,
+      principal
+        ? { ...principal, teams: access.teamsForAccount(principal.account.id) ?? [] }
+        : principal,
+    );
     return request.authorizedRepository
       ? {
           ...attributed,
@@ -270,7 +285,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       const isViewer = path.startsWith('/api/') || path === '/live';
       const token = presentedToken(req);
       const isMcp = path === '/api/brain/mcp';
-      const isAgentPolicy = path === '/api/agent-policy' && req.method === 'GET';
+      const isAgentPolicy = path === '/api/agent-policy';
       if (token?.startsWith('hb_')) {
         const principal = await access.authenticate(token);
         if (!principal)
@@ -282,18 +297,14 @@ export async function buildApp(): Promise<FastifyInstance> {
         req.accessPrincipal = principal;
         return;
       }
-      if (access.requireDeviceTokens && (isIngest || isMcp || isAgentPolicy)) {
+      if (isIngest || isMcp || isAgentPolicy) {
         return reply.code(401).send({ error: 'An individual workstation token is required.' });
       }
-      const required =
-        isIngest || isAgentPolicy ? config.ingestToken : isViewer ? config.viewerToken : undefined;
+      const required = isViewer ? config.viewerToken : undefined;
       if (required && token !== required) {
         return reply.code(401).send({ error: 'unauthorized' });
       }
-      const local =
-        ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) &&
-        /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
-      if (!required && (isIngest || isViewer) && !local) {
+      if (!required && isViewer && !isLocalRequest(req)) {
         return reply.code(401).send({ error: 'Authentication is required for remote access.' });
       }
     });
@@ -357,7 +368,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.post('/v1/logs', async (req, reply) => {
       store.ingestMany(
         parseLogs(req.body).map((event) =>
-          ingestEvent(req.accessPrincipal ? event : codexMetadata.enrich(event), req),
+          ingestEvent(isLocalRequest(req) ? codexMetadata.enrich(event) : event, req),
         ),
       );
       await writes.flush();
@@ -470,15 +481,28 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.get<{ Querystring: { days?: string } }>('/api/trends', async (req) => {
       await writes.flush();
       const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
-      return history.trends(days);
+      return history.trends(days, access.legacyTeamAliases());
     });
     app.get<{ Params: { agent: string } }>('/api/history/agent/:agent', async (req) => {
       await writes.flush();
       return history.agentHistory(req.params.agent);
     });
 
-    registerAccessRoutes(app, access);
+    const registry = new ProjectRegistry(
+      access,
+      process.env.BRAIN_PROJECTS_PATH ??
+        resolve(fileURLToPath(new URL('../..', import.meta.url)), 'brain.projects.json'),
+      process.env.BRAIN_GITHUB_CACHE_PATH ?? resolve(config.dataDir, 'brain-repositories'),
+    );
+    await registry.init();
+    registerAccessRoutes(app, access, registry, () => {
+      store.refreshTeams((sessionId) => {
+        const accountId = /^(?:codex|claude):([^/]+)\//.exec(sessionId)?.[1];
+        return accountId ? access.teamsForAccount(accountId) : undefined;
+      });
+    });
     await registerBrain(app, {
+      registry,
       onActivity: async (event: BrainActivity) => {
         if (
           event.kind === 'brain_model_call' &&

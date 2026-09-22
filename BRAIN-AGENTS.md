@@ -18,8 +18,11 @@ do not depend on PowerShell or a native Python installation.
    `COGNEE_JWT_SECRET`, and `CREDENTIAL_ENCRYPTION_KEY`. Generate independent secrets,
    for example with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
    Never paste them into a source document or chat. See [Cognee setup](COGNEE.md).
-3. Copy `brain.projects.example.json` to `brain.projects.json` if it does not exist.
-   Preserve an existing configuration. Both `.env` and `brain.projects.json` are ignored by Git.
+3. Preserve any existing `brain.projects.json`; legacy registrations are imported
+   once into the shared project registry. For a new GitHub project, add its name and
+   remote in **Projects** after startup. Public repositories need no GitHub token;
+   private repositories require the server `BRAIN_GITHUB_TOKEN` described below.
+   Both `.env` and `brain.projects.json` are ignored by Git.
 4. Start Cognee, build the application, then start Brain:
 
 ```bash
@@ -35,8 +38,13 @@ npm run brain
    descendants; otherwise they start as drafts. The root's own approval is separate.
 7. Synchronize and wait for an approved source to become ready. In Project analyses,
    select the project and open **Run a manual analysis**. Leave the commit empty
-   to review the project's server HEAD, or enter a full commit SHA. Add a base
+   to review the project's default GitHub branch or legacy server HEAD, or enter a full commit SHA. Add a base
    commit to focus on changes since that revision. The feature description is optional.
+8. In **Accounts**, create a developer and issue a workstation token. Provide it
+   as `HARMONIE_TOKEN` to the environment launching that workstation's coding clients
+   and relay, then follow [developer setup](fleet/SETUP.md). Telemetry and MCP always
+   require this token, including with a local server. Browser administration on
+   trusted localhost remains available to create the first account.
 
 The portable launcher is `scripts/start-brain.mjs`. It binds the API and preview to
 loopback and shuts both down on Ctrl+C. Provider configuration does not prove that
@@ -45,13 +53,36 @@ The original source-of-truth documents are never rewritten during import.
 
 ## Sources and project configuration
 
-Each entry in `brain.projects.json` contains:
+**Projects** is the shared registry for activity and Brain. Adding a GitHub
+repository creates a stable Brain project automatically; no second registration
+or manual clone is needed. Configure the review scope and allowed paths there,
+then use **Check access** to inspect code access and reference readiness. Registration
+does not start an analysis. Missing credentials, unpublished commits or missing
+approved references still need resolution before a review can succeed.
+
+Configure `BRAIN_GITHUB_TOKEN` only on the Brain server for private repositories.
+Use a fine-grained token with **Contents: read** access limited to the selected
+repositories. Public repositories work without it. Git objects are acquired on
+demand in `BRAIN_GITHUB_CACHE_PATH`, defaulting to `DATA_DIR/brain-repositories`.
+The cache is not a Cognee index; code remains searched and read as needed at a fixed
+SHA. Server Git operations do not push, execute repository files or mutate the
+developer's checkout. GitHub is the automatic remote provider for this version.
+
+Existing `brain.projects.json` entries are imported once into persisted storage
+and keep their IDs, local checkout paths, scope, specifications and history. They
+continue using their local server Git checkout. Existing activity-only repository
+records also gain Brain registrations during migration. Later Projects edits go
+to the shared registry, rather than writing the legacy JSON file. Existing local
+registrations can be linked when adding a repository to Projects.
+
+The legacy import format contains:
 
 - `id`, `name`, `scope`: project identity and the accepted feature boundary.
 - `repoPath`: a complete Git checkout available on the Brain server; relative paths
   resolve from this JSON file's location.
-- `codePaths`: exact repository paths or prefixes ending in `/`. No globbing,
-  implicit access outside those paths, or reading another project's files.
+- `codePaths`: exact repository paths or prefixes ending in `/`; `**` means all
+  supported code files. Other globs are unsupported. Sensitive/generated paths and
+  registered Git specifications remain excluded even with `**`.
 - `specs`: optional authoritative Git files, such as `{"kind":"git","path":"README.md"}`.
   An empty list is valid when the project's specifications are registered in Memory.
 
@@ -91,10 +122,14 @@ the same commit plus any submitted overlay. Unchanged dependencies and tests can
 read when needed; files outside the registered scope remain inaccessible.
 Search hits guide navigation and cannot serve as citations until their passages
 have been read. The analysis retains its captures and the exact ranges supplied.
-`codeRetrieval.maxSubmissionBytes` bounds the complete submitted snapshot separately
-from the model's evidence budget (`analysis.maxSourceBytes`). Submitting multiple
-files does not send their full contents to the model. The MCP request body also
-remains bounded by `mcp.maxRequestBytes`.
+The `submission` settings bound complete snapshots independently: by default,
+500 changed files, 2,000,000 UTF-8 bytes per file and 10,000,000 UTF-8 bytes in total.
+Deletions count toward the file limit. The model's evidence budget remains separate
+(`analysis.maxSources`, `analysis.maxSourceBytes` and `analysis.maxInputCharacters`).
+Submitting multiple files does not send their full contents to the model.
+`mcp.maxRequestBytes` allows a 64,000,000-byte JSON envelope, including worst-case
+escaping and metadata. Discovery exposes these upload limits as `submissionLimits`;
+see [submission capacity and oversized changes](BRAIN-MCP.md#submission-capacity).
 
 ## A developer agent or CI calls Brain
 
@@ -104,10 +139,15 @@ submissions at `/api/brain/mcp`. It reuses this same analysis pipeline. Submitte
 files form an immutable overlay on a known Git baseline; specifications stay
 server-controlled and the registered checkout is never modified.
 
-The first remote acquisition contract is a registered server checkout plus full head
-and optional base commit SHAs. The server cannot read a path on a developer's computer.
-CI/deployment must make these commits available in the registered checkout first.
-Brain does not execute `git fetch`, checkout, push, or arbitrary patches from an agent.
+For projects created in Projects, Brain acquires the requested GitHub commit and
+optional base commit into its managed cache. No manual server clone is required.
+Imported local projects retain their existing checkout acquisition contract. The
+server cannot read a path on a developer's computer or retrieve unpublished local
+commits from GitHub. For local commits and uncommitted work, use
+`scripts/brain-submit.mjs` to capture the complete current change against a published
+baseline and send it through `brain_submit_change`; see
+[local capture](BRAIN-MCP.md#capture-a-local-change). Related unchanged files remain
+available from that baseline for on-demand inspection.
 
 ```bash
 npm run brain:check -- dashboard
@@ -116,9 +156,9 @@ npm run brain:check -- dashboard FULL_HEAD_SHA FULL_BASE_SHA "Review changes aga
 
 Without a head SHA, the client resolves HEAD in its own current working directory.
 An agent in another repository can invoke the Node script by its absolute path.
-Set `BRAIN_URL=https://brain.example.com` and `BRAIN_ACCESS_TOKEN` in that agent's
-environment. The token currently matches the server's `VIEWER_TOKEN`; it is not
-the administrator token. Do not pass tokens as command-line arguments.
+Set `BRAIN_URL=https://brain.example.com` and the issued `HARMONIE_TOKEN` in that
+agent's environment. The same token authenticates the workstation's telemetry and
+Brain MCP. Do not pass tokens as command-line arguments.
 
 The client submits:
 
@@ -131,8 +171,8 @@ The client submits:
 }
 ```
 
-`POST /api/brain/analyses` returns HTTP 202 with a run ID. Poll
-`GET /api/brain/analyses/{id}` for stages and results. With a base SHA, Brain requires
+The client calls `brain_start_analysis` over MCP, receives a run ID, then polls
+`brain_get_analysis` for stages and results. With a base SHA, Brain requires
 it to be an ancestor of the head and prioritizes changed allowed code files.
 Related unchanged code and tests remain available as context. To review one commit's
 changes, use its first parent as the base; for a merge, choose the comparison parent
@@ -147,7 +187,7 @@ coverage, and whether review is needed. When no requirements apply, it reports
 An empty findings list never establishes that the code matches the specifications.
 Its exit code indicates technical completion,
 never automatic project compliance. A successful analysis is not an authorization
-to merge or deploy. No Brain MCP server is required for this HTTP contract.
+to merge or deploy. The client uses the Brain server's `/api/brain/mcp` endpoint.
 
 ## Analysis roles and human review
 
@@ -191,16 +231,18 @@ the public callback URL, credential renewal and moving to a company connection.
 
 Shared deployments require separate `VIEWER_TOKEN` and `BRAIN_ADMIN_TOKEN` values.
 The latter protects source/connection management and is entered in Brain Settings.
-An agent only needs the viewer token. The private local launcher permits trusted
-loopback administration without these tokens. This pilot separates administration
-from normal API access. [Accounts](ACCOUNTS.md) adds individual workstation tokens
-for MCP and telemetry. Active accounts share registered Brain projects, while
-browser administration retains shared keys.
+The viewer credential is for dashboard browsers. The private local launcher permits
+trusted loopback administration without these browser credentials.
+[Accounts](ACCOUNTS.md) issues individual workstation tokens for MCP and telemetry;
+these are required on local and shared servers. Active accounts share registered
+Brain projects. Browser and administrator credentials cannot authenticate agent
+requests, and workstation credentials cannot administer Brain.
 
 ## Container deployment
 
-The Brain overlay removes the old Notion-export mount. It mounts a complete Git
-checkout read-only, passes server secrets, uses the internal `http://cognee:8000`
+The Brain overlay retains the existing read-only checkout mount for legacy local
+registrations. New GitHub projects use the server's persistent data volume for
+their managed Git caches. It passes server secrets, uses the internal `http://cognee:8000`
 address, and waits for Cognee's health check. Configure the `.env` tokens and public
 OAuth callback before starting the combined stack:
 
@@ -217,9 +259,11 @@ derived index. Preserve Brain's independent captures and analysis history.
 
 Cognee's host port remains loopback-only. Provide HTTPS and a trusted reverse proxy
 for the externally reachable dashboard/API; this Compose overlay does not provision
-a domain or TLS certificate. For multiple repositories, mount each complete checkout
-at a server path listed in `brain.projects.json`. A Windows/macOS linked worktree
-whose `.git` points outside its mount is not a portable server checkout.
+a domain or TLS certificate. GitHub projects added in Projects need no additional
+repository bind mounts. An imported local registration still needs its complete
+Git checkout mounted at its preserved server path. A Windows/macOS linked worktree
+whose `.git` points outside its mount is not a portable server checkout. Keep the
+server data volume when upgrading to preserve the project registry and caches.
 
 ## Synchronization and graph
 
@@ -245,6 +289,16 @@ All adjustable non-secret Brain limits are in `server/src/brain/config.json`;
 credentials and environment-specific URLs remain in `.env` or deployment secrets.
 The shared JSON is bundled in the browser and must never contain credentials.
 
+Keep upload capacity separate from the cost and context budget of a review. Larger
+snapshots are persisted as complete overlays and read on demand; model evidence
+limits still bound each analysis. When adjusting upload settings, update the
+portable capture helper's shared configuration and the MCP reverse-proxy body
+limit as well. The bundled Docker build renders Nginx's MCP limit from the same
+JSON while retaining the existing limits on other endpoints. Restart the API after
+a configuration change and rebuild deployment
+images when their bundled configuration changes. A proxy rejection can occur
+before Brain receives the request; `HTTP 413` is not a code-review finding.
+
 One analysis runs at a time. Model calls use `BRAIN_REQUEST_TIMEOUT_MS`; `0` disables
 the response deadline. Git operations and individual Cognee HTTP calls retain their
 own timeouts. Provider-side outages and quotas can still fail a request. Client polling
@@ -262,7 +316,7 @@ npm test
 ```
 
 `npm test` builds and tests the server, builds the UI, runs every Brain UI suite,
-then checks the portable launcher and developer client. It uses temporary data and
+then checks the portable launcher, local submission capture and developer client. It uses temporary data and
 substituted providers, without paid API calls. For focused changes, use
 `npm run test:brain-ui` or one of its individual reader, graph, memory, and analysis
 commands. The standalone launcher test requires the application to be built first.

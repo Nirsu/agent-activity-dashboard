@@ -13,6 +13,7 @@ import { ensureRelay } from './ensure-relay.mjs';
 import { relayCredentialId } from './relay-outbox.mjs';
 
 const branch = 'feature/AAD-321-workspaces';
+process.env.HARMONIE_TOKEN = 'fixture-workstation-token';
 const hookPath = fileURLToPath(new URL('../hooks/hook.js', import.meta.url));
 const attribute = (key, value) => ({ key, value: { stringValue: value } });
 const attributeValue = (values, key) =>
@@ -322,7 +323,7 @@ test('on-demand relay starts within its hook deadline with 40 persisted workspac
     join(f.directory, 'relay-sessions.json'),
     JSON.stringify({
       dashboardUrl: f.policy.dashboardUrl,
-      credentialId: relayCredentialId(process.env.HARMONIE_TOKEN || process.env.AAD_TOKEN),
+      credentialId: relayCredentialId(process.env.HARMONIE_TOKEN),
       sessions: Array.from({ length: 40 }, (_, index) => [
         `codex:restored-${index}`,
         { project: f.policy.projects[0], workspace: f.workspace, at: Date.now() },

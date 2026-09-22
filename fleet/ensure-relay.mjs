@@ -5,23 +5,24 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readPolicy, defaultConfigPath } from './project-policy.mjs';
-import { relayCredentialId } from './relay-outbox.mjs';
+import { relayCredentialId, requireAgentToken } from './relay-outbox.mjs';
 
 const limits = createRequire(import.meta.url)('./relay-config.json');
 
 export async function ensureRelay({ configPath = defaultConfigPath(), launch = spawn } = {}) {
   const policy = readPolicy(configPath);
   if (!policy.projects.length) return false;
+  const token = requireAgentToken(process.env.HARMONIE_TOKEN);
   const url = `http://127.0.0.1:${policy.relayPort}/healthz`;
   const configurationId = createHash('sha256').update(resolve(configPath)).digest('hex');
-  const credentialId = relayCredentialId(process.env.HARMONIE_TOKEN || process.env.AAD_TOKEN);
+  const credentialId = relayCredentialId(token);
   async function health() {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(limits.healthTimeoutMs) });
       const value = await response.json();
       if (
         value.service !== 'harmonie-project-relay' ||
-        value.version !== 5 ||
+        value.version !== 6 ||
         value.configurationId !== configurationId ||
         value.credentialId !== credentialId
       ) {

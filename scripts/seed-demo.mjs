@@ -1,11 +1,31 @@
 #!/usr/bin/env node
 
 const baseUrl = (process.env.AAD_URL ?? 'http://127.0.0.1:18418').replace(/\/$/, '');
+const token = process.env.HARMONIE_TOKEN;
+if (!token) {
+  throw new Error('Set HARMONIE_TOKEN to a workstation token issued in Accounts.');
+}
+const destination = new URL(baseUrl);
+if (
+  destination.username ||
+  destination.password ||
+  destination.search ||
+  destination.hash ||
+  destination.pathname !== '/' ||
+  !(
+    destination.protocol === 'https:' ||
+    (destination.protocol === 'http:' &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(destination.hostname))
+  )
+) {
+  throw new Error('AAD_URL must be an HTTPS origin or HTTP on localhost, without URL credentials.');
+}
 
 async function post(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    redirect: 'error',
     body: JSON.stringify(body),
   });
   if (!response.ok) {

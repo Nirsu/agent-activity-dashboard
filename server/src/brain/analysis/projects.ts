@@ -4,13 +4,16 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 import { makeSource } from '../sources.js';
 import type { AnalysisRun, Project } from './types.js';
 import { fail, requireList, requireObject, requireText } from './validation.js';
+import { prepareGithubRevision } from './github.js';
 
 const executeFile = promisify(execFile);
-const sensitivePath =
-  /(^|\/)(\.git|\.env[^/]*|[^/]*(?:secret|credential|private[-_]?key)[^/]*|node_modules|dist|build)(\/|$)|\.(pem|key|p12|pfx)$/i;
+const { isSensitivePath } = createRequire(import.meta.url)('../../../../fleet/brain-paths.cjs') as {
+  isSensitivePath(path: string): boolean;
+};
 
 export function requireRepoPath(value: unknown): string {
   const path = requireText(value, brainConfig.projects.maxGitPathCharacters);
@@ -21,7 +24,7 @@ export function requireRepoPath(value: unknown): string {
     path.includes(':') ||
     /[\u0000-\u001f]/.test(path) ||
     containsTraversal ||
-    sensitivePath.test(path)
+    isSensitivePath(path)
   ) {
     fail('Git path is not allowed in the configured scope.');
   }
@@ -30,10 +33,11 @@ export function requireRepoPath(value: unknown): string {
 
 export function isAllowedCodePath(project: Project, path: string) {
   return (
-    project.codePaths.some((prefix) =>
-      prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix,
+    project.codePaths.some(
+      (prefix) =>
+        prefix === '**' || (prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix),
     ) &&
-    !sensitivePath.test(path) &&
+    !isSensitivePath(path) &&
     !project.specs.some((specification) => specification.path === path)
   );
 }
@@ -116,6 +120,10 @@ export async function captureProjectSources(
   run: Pick<AnalysisRun, 'commit' | 'baseCommit' | 'sources' | 'changedFiles'>,
   project: Project,
 ) {
+  run.commit = await prepareGithubRevision(project, run.commit);
+  if (run.baseCommit) {
+    await prepareGithubRevision(project, run.baseCommit);
+  }
   run.commit = (
     await runGit(project, ['rev-parse', '--verify', `${run.commit ?? 'HEAD'}^{commit}`])
   ).trim();

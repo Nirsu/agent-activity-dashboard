@@ -1,21 +1,28 @@
 import { useState } from 'react';
-import type { Account, AccountInput } from './useAccounts';
+import type { Account, AccountInput, Team } from './useAccounts';
 
 export function AccountEditor({
   account,
+  teams,
   busy,
   save,
   close,
 }: {
   account?: Account;
+  teams: Team[];
   busy: boolean;
   save: (input: AccountInput, id?: string) => Promise<void>;
   close: () => void;
 }) {
   const [name, setName] = useState(account?.name ?? '');
   const [email, setEmail] = useState(account?.email ?? '');
-  const [team, setTeam] = useState(account?.team ?? '');
-  const input = { name, email, team, enabled: account?.enabled ?? true };
+  const [teamIds, setTeamIds] = useState(account?.teamIds ?? []);
+  const input = {
+    name,
+    email,
+    teamIds: teamIds.filter((id) => teams.some((team) => team.id === id)),
+    enabled: account?.enabled ?? true,
+  };
   return (
     <form
       className="access-form"
@@ -63,17 +70,35 @@ export function AccountEditor({
           onChange={(event) => setEmail(event.target.value)}
         />
       </label>
-      <label>
-        Team
-        <input
-          maxLength={80}
-          disabled={busy}
-          pattern="[a-zA-Z0-9_.-]*"
-          value={team}
-          onChange={(event) => setTeam(event.target.value)}
-          placeholder="e.g. platform-team"
-        />
-      </label>
+      <fieldset className="access-team-selection" disabled={busy}>
+        <legend>Teams</legend>
+        <p>Select all teams this developer belongs to. Membership is optional.</p>
+        {!teams.length ? (
+          <p>Create a team in the Teams section above to assign this developer.</p>
+        ) : (
+          <div className="access-team-options">
+            {teams.map((team) => (
+              <label key={team.id}>
+                <input
+                  type="checkbox"
+                  name="teamIds"
+                  value={team.id}
+                  checked={teamIds.includes(team.id)}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setTeamIds((current) =>
+                      checked
+                        ? [...current.filter((id) => id !== team.id), team.id]
+                        : current.filter((id) => id !== team.id),
+                    );
+                  }}
+                />
+                <span>{team.name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </fieldset>
       <p>
         All active accounts share access to the registered Brain projects. Manage the common
         repository filter in <a href="#projects">Projects</a>.

@@ -17,8 +17,16 @@ export async function requireBrainAccess(request: FastifyRequest, reply: Fastify
   if (!request.url.startsWith('/api/brain') || isBrainCallback(request)) {
     return;
   }
+  const isMcp = request.url.split('?')[0] === '/api/brain/mcp';
+  if (isMcp && !request.accessPrincipal) {
+    return reply.code(401).send({ error: 'An individual workstation token is required.' });
+  }
   if (request.accessPrincipal) {
-    // The outer authentication hook authorizes only the MCP transport for devices.
+    if (!isMcp) {
+      return reply
+        .code(403)
+        .send({ error: 'Workstation tokens only allow telemetry and Brain MCP.' });
+    }
   } else if (config.viewerToken) {
     const authorization = request.headers.authorization;
     const provided = authorization?.startsWith('Bearer ')

@@ -13,27 +13,40 @@ import { registerMemoryWebhooks } from './brain/memory/webhooks.js';
 import { registerMemoryGraph } from './brain/graph.js';
 import { registerBrainMcp } from './brain/mcp.js';
 import type { BrainAgentsOptions } from './brain/analysis/types.js';
+import type { ProjectRegistry } from './brain/project-registry.js';
 
 export { makeSource, type Source } from './brain/sources.js';
 
 export async function registerBrain(
   app: FastifyInstance,
-  options: Pick<BrainAgentsOptions, 'onActivity'> = {},
+  options: Pick<BrainAgentsOptions, 'onActivity'> & { registry?: ProjectRegistry } = {},
 ) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const dbPath = process.env.BRAIN_DB_PATH ?? resolve(config.dataDir, 'brain.db');
   const projectsPath = process.env.BRAIN_PROJECTS_PATH ?? resolve(root, 'brain.projects.json');
+  const loadProjects = options.registry ? () => options.registry!.projects() : undefined;
   const notion = new NotionConnection();
   const cognee = new CogneeClient();
   const memory = new MemoryService({
     dbPath,
     projectsPath,
+    loadProjects,
     notion,
     cognee,
     schedule: process.env.BRAIN_SYNC_ENABLED !== '0',
     syncMode: process.env.BRAIN_SYNC_MODE === 'webhook' ? 'webhook' : 'poll',
   });
-  const agents = new BrainAgents({ dbPath, projectsPath, memory, onActivity: options.onActivity });
+  const agents = new BrainAgents({
+    dbPath,
+    projectsPath,
+    loadProjects,
+    memory,
+    onActivity: options.onActivity,
+    projectStatus: options.registry
+      ? (projectId) => options.registry!.projectStatus(projectId)
+      : undefined,
+  });
+  options.registry?.setReferenceStatus((projectId) => memory.readiness(projectId));
   // Register cleanup before initialization can fail. Abort upstream work before awaiting workers.
   app.addHook('onClose', async () => {
     try {

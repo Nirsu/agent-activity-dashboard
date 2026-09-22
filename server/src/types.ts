@@ -16,6 +16,12 @@ export type AgentClient = 'cli' | 'desktop' | 'vscode' | 'unknown';
 export type SessionRole = 'main' | 'subagent' | 'internal' | 'unknown';
 export type MetricTemporality = 'delta' | 'cumulative' | 'unspecified';
 
+/** Stable team identity with its display name at the time of attribution. */
+export interface ActivityTeam {
+  id: string;
+  name: string;
+}
+
 /** A persisted counter baseline. The key includes every OTLP series dimension. */
 export interface CumulativeSnapshot {
   seriesKey: string;
@@ -41,6 +47,7 @@ export interface UsageDelta {
   sessionId?: string;
   agent?: string;
   teamId?: string;
+  teams?: ActivityTeam[];
   ticket?: string;
   repo?: string;
   projectId?: string;
@@ -118,6 +125,7 @@ export interface AgentEvent {
   userEmail?: string; // cleared when anonymize is on
   agent?: string; // stable pseudonym (present always; = email when not anonymized)
   teamId?: string;
+  teams?: ActivityTeam[];
   department?: string;
   terminalType?: string;
 
@@ -173,6 +181,7 @@ export interface SessionState {
   model?: string;
   client?: AgentClient;
   teamId?: string;
+  teams?: ActivityTeam[];
   department?: string;
   userEmail?: string;
   agent?: string; // stable pseudonym for directory/map grouping

@@ -30,6 +30,7 @@ function policyVersion(source: SourceRegistration) {
 type Options = {
   dbPath: string;
   projectsPath: string;
+  loadProjects?: () => Promise<Project[]>;
   notion: Pick<NotionConnection, 'state' | 'fetchPage'>;
   cognee: Pick<CogneeClient, 'status' | 'index' | 'search' | 'graph'>;
   schedule?: boolean;
@@ -97,8 +98,12 @@ export class MemoryService {
       : brainConfig.synchronization.pollIntervalMs;
   }
 
+  private loadProjects() {
+    return this.options.loadProjects?.() ?? readProjects(this.options.projectsPath);
+  }
+
   async registerProjects() {
-    const projects = await readProjects(this.options.projectsPath);
+    const projects = await this.loadProjects();
     return this.store.transaction(async () => {
       const active = new Set<string>();
       for (const project of projects) {
@@ -216,7 +221,7 @@ export class MemoryService {
   }
 
   async update(id: string, input: SourcePolicy) {
-    const projects = await readProjects(this.options.projectsPath);
+    const projects = await this.loadProjects();
     return this.store.transaction(async () => {
       const source = this.store.source(id);
       if (!source) {
@@ -428,7 +433,7 @@ export class MemoryService {
     if (source.kind === 'review') {
       return { capture: makeCapture(source, source.reviewContent!) };
     }
-    const projects = await readProjects(this.options.projectsPath);
+    const projects = await this.loadProjects();
     const project = projects.find((value) => value.id === source.git?.projectId);
     if (!project) {
       fail('The source project is no longer registered.');
@@ -535,6 +540,40 @@ export class MemoryService {
           source.approval === 'approved' &&
           (source.shared || source.projectIds.includes(projectId)),
       );
+  }
+
+  readiness(projectId: string) {
+    const applicable = this.applicable(projectId);
+    if (!applicable.some((source) => source.kind !== 'review')) {
+      return {
+        ready: false,
+        message:
+          'Code access verified. Add and approve project or shared references in Brain Memory.',
+      };
+    }
+    const incompleteBranch = this.store
+      .sources()
+      .some(
+        (source) =>
+          source.kind === 'notion' &&
+          source.includeSubpages &&
+          source.approval !== 'withdrawn' &&
+          (source.shared || source.projectIds.includes(projectId)) &&
+          source.status !== 'ready',
+      );
+    const incomplete = applicable.some(
+      (source) =>
+        source.kind !== 'git' &&
+        (source.status !== 'ready' || !source.datasetId || !source.currentSourceId),
+    );
+    if (incompleteBranch || incomplete) {
+      return {
+        ready: false,
+        message:
+          'Code access verified. Synchronize failed or pending approved references in Brain Memory.',
+      };
+    }
+    return { ready: true, message: 'Approved references are available.' };
   }
 
   private async indexCapture(capture: Source, registrationId: string) {

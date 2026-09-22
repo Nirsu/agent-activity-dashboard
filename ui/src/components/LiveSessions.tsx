@@ -3,6 +3,7 @@ import type { SessionGroup } from '../../../server/src/session-hierarchy';
 import { sessionRole } from '../../../server/src/session-hierarchy';
 import { ago, statusLabel, tokens, usd } from '../format';
 import { SessionCard } from './SessionCard';
+import { sessionTeams } from '../teams';
 import './LiveSessions.css';
 
 export function SessionRow({ session, onClick }: { session: SessionState; onClick: () => void }) {
@@ -47,6 +48,7 @@ export function LiveSessions({
   unlinked,
   hasFilters,
   providerLabel,
+  selectedTeam = null,
   onSelect,
   onClear,
 }: {
@@ -54,23 +56,35 @@ export function LiveSessions({
   unlinked: SessionState[];
   hasFilters: boolean;
   providerLabel: string;
+  selectedTeam?: string | null;
   onSelect: (id: string) => void;
   onClear: () => void;
 }) {
   const active = groups.filter((group) => group.active);
   const inactive = groups.filter((group) => !group.active);
-  const streams = new Map<string, SessionGroup[]>();
+  const streams = new Map<string, { name: string; groups: SessionGroup[] }>();
   for (const group of active) {
-    const key = group.root.teamId ?? 'Unassigned stream';
-    if (!streams.has(key)) streams.set(key, []);
-    streams.get(key)!.push(group);
+    for (const team of sessionTeams(group.root)) {
+      if (selectedTeam && team.id !== selectedTeam) {
+        continue;
+      }
+      if (!streams.has(team.id)) {
+        streams.set(team.id, { name: team.name, groups: [] });
+      }
+      streams.get(team.id)!.groups.push(group);
+    }
   }
+  const hasSharedTasks =
+    !selectedTeam && active.some((group) => sessionTeams(group.root).length > 1);
   return (
     <section className="live-sessions" aria-label="Live sessions">
       <div className="live-section-heading">
         <div>
           <h2>Live sessions</h2>
           <p>Main tasks in progress. Open a task to see its subagents.</p>
+          {hasSharedTasks && (
+            <p>Tasks in multiple teams appear in each team. Totals count each task once.</p>
+          )}
         </div>
         <span className="active-task-count">
           {active.length} active {active.length === 1 ? 'task' : 'tasks'}
@@ -97,10 +111,10 @@ export function LiveSessions({
           )}
         </div>
       )}
-      {[...streams].map(([stream, list]) => (
+      {[...streams].map(([stream, { name, groups: list }]) => (
         <section key={stream} className="stream">
           <div className="stream-head">
-            <h2>{stream}</h2>
+            <h2>{name}</h2>
             <span className="stream-count">
               {list.length} active {list.length === 1 ? 'task' : 'tasks'}
             </span>

@@ -1,6 +1,8 @@
 # Source this in the shell where you launch `claude` to stream telemetry to the
 # local project-filtering relay. Run agents:setup, choose projects and start
 # agents:relay first. `source ./otel-env.sh`
+# The relay requires an Accounts workstation token in HARMONIE_TOKEN. Client
+# OTel exports stay on loopback and do not carry the upstream credential.
 #
 # Per-stream: override team.id / department per developer or per stream.
 

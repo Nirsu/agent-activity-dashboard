@@ -5,7 +5,11 @@ import type { Account, useAccounts, WorkstationToken } from './useAccounts';
 
 export function tokenStatus(token: WorkstationToken) {
   if (token.revokedAt) return 'Revoked';
-  return Date.parse(token.expiresAt) <= Date.now() ? 'Expired' : 'Active';
+  if (token.expiresAt === null) return 'Active';
+  if (typeof token.expiresAt !== 'string') return 'Invalid';
+  const expiresAt = Date.parse(token.expiresAt);
+  if (!Number.isFinite(expiresAt)) return 'Invalid';
+  return expiresAt <= Date.now() ? 'Expired' : 'Active';
 }
 export const accessDate = (value?: string) => (value ? new Date(value).toLocaleString() : 'Never');
 
@@ -17,7 +21,9 @@ export function Workstations({
   access: ReturnType<typeof useAccounts>;
 }) {
   const [label, setLabel] = useState('');
-  const [days, setDays] = useState(brainConfig.access.defaultTokenDays);
+  const [expires, setExpires] = useState(false);
+  const [days, setDays] = useState(String(brainConfig.access.defaultTokenDays));
+  const [validationError, setValidationError] = useState('');
   const tokens = access.state?.tokens.filter((token) => token.accountId === account.id) ?? [];
   return (
     <section className="access-workstations">
@@ -40,7 +46,20 @@ export function Workstations({
         className="access-token-form"
         onSubmit={async (event) => {
           event.preventDefault();
-          await access.issue(account.id, label, days);
+          const duration = Number(days);
+          if (
+            expires &&
+            (!Number.isInteger(duration) ||
+              duration < 1 ||
+              duration > brainConfig.access.maxTokenDays)
+          ) {
+            setValidationError(
+              `Enter a duration from 1 to ${brainConfig.access.maxTokenDays} days.`,
+            );
+            return;
+          }
+          setValidationError('');
+          await access.issue(account.id, label, expires ? duration : undefined);
         }}
       >
         <label>
@@ -54,18 +73,41 @@ export function Workstations({
             onChange={(event) => setLabel(event.target.value)}
           />
         </label>
-        <label>
-          Expires in days
-          <input
-            disabled={access.busy || !account.enabled}
-            type="number"
-            required
-            min={1}
-            max={brainConfig.access.maxTokenDays}
-            value={days}
-            onChange={(event) => setDays(Number(event.target.value))}
-          />
-        </label>
+        <div className="access-token-expiration">
+          <label>
+            Expiration
+            <select
+              disabled={access.busy || !account.enabled}
+              value={expires ? 'duration' : 'none'}
+              onChange={(event) => {
+                setExpires(event.target.value === 'duration');
+                setValidationError('');
+              }}
+            >
+              <option value="none">No expiration</option>
+              <option value="duration">Expires after</option>
+            </select>
+          </label>
+          {expires && (
+            <label>
+              Expires in days
+              <input
+                disabled={access.busy || !account.enabled}
+                type="number"
+                required
+                min={1}
+                max={brainConfig.access.maxTokenDays}
+                value={days}
+                onChange={(event) => setDays(event.target.value)}
+              />
+            </label>
+          )}
+        </div>
+        {validationError && (
+          <p className="access-inline-warning" role="alert">
+            {validationError}
+          </p>
+        )}
         <button disabled={access.busy || !account.enabled || Boolean(access.issued)}>
           Generate token
         </button>
@@ -82,7 +124,13 @@ export function Workstations({
           </span>
           <div>
             <strong>{token.label}</strong>
-            <small>Expires {accessDate(token.expiresAt)}</small>
+            <small>
+              {token.expiresAt === null
+                ? 'No expiration'
+                : !Number.isFinite(Date.parse(token.expiresAt))
+                  ? 'Expiration unknown'
+                  : `Expires ${accessDate(token.expiresAt)}`}
+            </small>
             <small>Last used {accessDate(token.lastUsedAt)}</small>
           </div>
           <div className="access-token-actions">
@@ -169,7 +217,7 @@ export function IssuedToken({
         </p>
         <pre>
           npm run agents:setup -- --url &lt;dashboard-url&gt; --project &lt;repository-path&gt;
-          --individual-token --apply
+          --apply
         </pre>
         <p>Restart the relay and clients, then approve the installed hooks and MCP connection.</p>
       </details>

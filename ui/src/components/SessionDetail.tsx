@@ -3,6 +3,7 @@ import type { AgentEvent, SessionState } from '../types';
 import { clock, duration, since, statusLabel, tokens, usd } from '../format';
 import { sessionRole, type SessionGroup } from '../../../server/src/session-hierarchy';
 import { SessionRow } from './LiveSessions';
+import { sessionTeams } from '../teams';
 
 function rowLabel(e: AgentEvent): string {
   switch (e.kind) {
@@ -104,7 +105,10 @@ export function SessionDetail({
           <div>
             <div className="drawer-title">{session.repo ?? session.sessionId.slice(0, 12)}</div>
             <div className="drawer-sub">
-              {session.agent ?? session.userEmail ?? '—'} · {session.teamId ?? 'no stream'}
+              {session.agent ?? session.userEmail ?? '—'} ·{' '}
+              {sessionTeams(session)
+                .map((team) => team.name)
+                .join(', ')}
               {session.ticket ? ` · ${session.ticket}` : ''}
             </div>
             <div className="drawer-provider">

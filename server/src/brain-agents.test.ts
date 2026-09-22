@@ -578,6 +578,91 @@ test('large submitted snapshots send only bounded excerpts to the comparison mod
   );
 });
 
+test('snapshots above 60 files and 400 KB persist completely while model evidence stays on demand', async (t) => {
+  const f = await fixture();
+  await writeFile(resolve(f.repo, 'src/deleted.ts'), 'export const obsolete = true;');
+  await f.git('add', 'src/deleted.ts');
+  await f.git('commit', '-m', 'Add deletion fixture');
+  const baseline = await f.git('rev-parse', 'HEAD');
+  const model = mockModel();
+  const comparisons: Record<string, unknown>[] = [];
+  const options = {
+    dbPath: f.dbPath,
+    projectsPath: f.projectsPath,
+    memory: f.memory,
+    model: 'test',
+    call: (async (...args) => {
+      if (args[0] === 'comparison') {
+        comparisons.push(args[2] as Record<string, unknown>);
+        if (comparisons.length === 1) {
+          return {
+            value: {
+              checks: [],
+              requests: [
+                { action: 'read', path: 'src/z074.ts', startLine: 1, endLine: 1 },
+                { action: 'read', path: 'src/unchanged.ts', startLine: 1, endLine: 1 },
+              ],
+            },
+            inputTokens: 10,
+            outputTokens: 5,
+          };
+        }
+      }
+      return model.call(...args);
+    }) as ModelCall,
+  };
+  let service = new BrainAgents(options);
+  t.after(async () => {
+    await service.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await service.init();
+  const files = [
+    { path: 'src/main.ts', content: 'export const includeDate = true;' },
+    ...Array.from({ length: 75 }, (_, index) => ({
+      path: `src/z${String(index).padStart(3, '0')}.ts`,
+      content: `export const item = ${index};\n${'// Context ééé\n'.repeat(1000)}// UNREAD_SNAPSHOT_TAIL`,
+    })),
+    { path: 'src/deleted.ts', content: null },
+  ];
+  assert.ok(files.length > 60);
+  assert.ok(files.reduce((sum, file) => sum + Buffer.byteLength(file.content ?? ''), 0) > 400_000);
+  const run = await service.start('dashboard', baseline, undefined, 'Review a large change', files);
+  await service.wait();
+  const result = await service.detail(run.id);
+  assert.equal(result.status, 'succeeded', result.error);
+  assert.equal(result.submission!.paths.length, files.length);
+  for (const file of files) {
+    const stored = result.sources.find((source) => source.path === file.path);
+    assert.equal(stored?.content, file.content ?? undefined);
+    if (stored) {
+      assert.equal(stored.origin!.properties.snapshotId, result.submission!.id);
+    }
+  }
+  assert.equal(comparisons.length, 2);
+  assert.equal(
+    (comparisons[0].code as InputSource[]).length,
+    brainConfig.codeRetrieval.initialFiles,
+  );
+  assert.ok(
+    (comparisons[1].code as InputSource[]).some((source) => source.path === 'src/unchanged.ts'),
+  );
+  assert.ok((comparisons[1].code as InputSource[]).some((source) => source.path === 'src/z074.ts'));
+  assert.doesNotMatch(JSON.stringify(comparisons), /UNREAD_SNAPSHOT_TAIL/);
+  for (const input of comparisons) {
+    assert.ok(JSON.stringify(input).length < brainConfig.analysis.maxInputCharacters);
+    assert.ok((input.code as InputSource[]).length < brainConfig.analysis.maxSources);
+  }
+  assert.equal(await f.git('status', '--porcelain'), '');
+  await service.close();
+  service = new BrainAgents(options);
+  await service.init();
+  const restored = await service.detail(run.id);
+  assert.deepEqual(restored.sources, result.sources);
+  assert.deepEqual(restored.submission, result.submission);
+  assert.deepEqual(restored.codeRetrieval, result.codeRetrieval);
+});
+
 test('comparison can search and read additional code with usage and provenance retained for every round', async (t) => {
   const f = await fixture();
   const model = mockModel();

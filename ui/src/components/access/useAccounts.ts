@@ -5,25 +5,30 @@ export interface Account {
   id: string;
   name: string;
   email: string;
-  team: string;
+  teamIds: string[];
   enabled: boolean;
   activityLabel: string;
+}
+export interface Team {
+  id: string;
+  name: string;
+  createdAt: string;
 }
 export interface WorkstationToken {
   id: string;
   accountId: string;
   label: string;
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
   revokedAt?: string;
   lastUsedAt?: string;
 }
 export interface AccessState {
   accounts: Account[];
+  teams: Team[];
   tokens: WorkstationToken[];
   projects: { id: string; name: string }[];
   audit: { id: string; at: string; actor: string; action: string; target: string }[];
-  requireDeviceTokens: boolean;
   repositories: Repository[];
   filterRepositories: boolean;
 }
@@ -33,8 +38,16 @@ export interface Repository {
   remote: string;
   enabled: boolean;
   brainProjectId?: string;
+  brainScope?: string;
+  brainCodePaths?: string[];
+  brainStatus?: {
+    state:
+      'ready' | 'needs_access' | 'needs_references' | 'unverified' | 'disabled' | 'unsupported';
+    message: string;
+  };
 }
-export type AccountInput = Pick<Account, 'name' | 'email' | 'team' | 'enabled'>;
+export type AccountInput = Pick<Account, 'name' | 'email' | 'teamIds' | 'enabled'>;
+export type RepositoryInput = Omit<Repository, 'id' | 'brainStatus'>;
 
 export function useAccounts() {
   const [state, setState] = useState<AccessState | null>(null);
@@ -87,18 +100,32 @@ export function useAccounts() {
           id ? 'PUT' : 'POST',
         ),
       ),
-    issue: (accountId: string, label: string, expiresInDays: number) =>
+    saveTeam: (name: string, id?: string) =>
+      action(() =>
+        brainAdminRequest<Team>(
+          `/access/teams${id ? `/${id}` : ''}`,
+          { name },
+          id ? 'PUT' : 'POST',
+        ),
+      ),
+    deleteTeam: (id: string) =>
+      action(() => brainAdminRequest<{ ok: true }>(`/access/teams/${id}`, undefined, 'DELETE')),
+    issue: (accountId: string, label: string, expiresInDays?: number) =>
       action(async () => {
-        setIssued(await brainAdminRequest('/access/tokens', { accountId, label, expiresInDays }));
+        setIssued(
+          await brainAdminRequest('/access/tokens', {
+            accountId,
+            label,
+            ...(expiresInDays === undefined ? {} : { expiresInDays }),
+          }),
+        );
       }),
     revoke: (id: string) =>
       action(async () => {
         await brainAdminRequest(`/access/tokens/${id}`, undefined, 'DELETE');
         setIssued((current) => (current?.token.id === id ? null : current));
       }),
-    requireTokens: (required: boolean) =>
-      action(() => brainAdminRequest('/access/policy', { required }, 'PUT')),
-    saveRepository: (input: Omit<Repository, 'id'>, id?: string) =>
+    saveRepository: (input: RepositoryInput, id?: string) =>
       action(() =>
         brainAdminRequest<Repository>(
           `/access/repositories${id ? `/${id}` : ''}`,
@@ -106,6 +133,8 @@ export function useAccounts() {
           id ? 'PUT' : 'POST',
         ),
       ),
+    checkRepository: (id: string) =>
+      action(() => brainAdminRequest<Repository>(`/access/repositories/${id}/check`, {})),
     filterRepositories: (enabled: boolean) =>
       action(() => brainAdminRequest('/access/repository-policy', { enabled }, 'PUT')),
     lock: () => {

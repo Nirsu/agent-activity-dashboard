@@ -7,6 +7,13 @@ import { safeTelemetry } from './safe-telemetry.mjs';
 
 const defaults = createRequire(import.meta.url)('./relay-config.json');
 
+export function requireAgentToken(token) {
+  if (typeof token !== 'string' || !token.trim()) {
+    throw new Error('Set HARMONIE_TOKEN to a workstation token issued in Accounts.');
+  }
+  return token;
+}
+
 // Fingerprints bind queued events and running relays without storing the bearer secret.
 export const relayCredentialId = (token) =>
   createHash('sha256')
@@ -27,7 +34,7 @@ export class RelayOutbox {
     this.configPath = configPath;
     this.directory = join(dirname(configPath), 'outbox');
     this.forward = forward;
-    this.token = token;
+    this.token = requireAgentToken(token);
     this.credentialId = relayCredentialId(token);
     this.limits = limits;
   }
@@ -155,8 +162,10 @@ export class RelayOutbox {
         retired = retired || isRetired();
       }
       if (!retired && !expired) {
-        const headers = { 'content-type': 'application/json' };
-        if (this.token) headers.authorization = `Bearer ${this.token}`;
+        const headers = {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.token}`,
+        };
         if (entry.repository) headers['x-harmonie-repository'] = entry.repository;
         const result = await this.forward(`${entry.dashboardUrl}${entry.path}`, {
           method: 'POST',
@@ -200,7 +209,7 @@ export class RelayOutbox {
       return this.remotePolicy.value;
     const response = await this.forward(`${dashboardUrl}/api/agent-policy`, {
       method: 'GET',
-      headers: this.token ? { authorization: `Bearer ${this.token}` } : {},
+      headers: { authorization: `Bearer ${this.token}` },
       redirect: 'error',
       signal: AbortSignal.timeout(this.limits.forwardTimeoutMs),
     });

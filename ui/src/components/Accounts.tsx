@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react';
 import { setBrainAdminToken } from './brain/api';
 import { AccountEditor } from './access/AccountEditor';
+import { TeamManager } from './access/TeamManager';
 import { AdministratorAccess } from './access/AdministratorAccess';
 import { useAccounts } from './access/useAccounts';
 import {
   AccessEmpty,
   AccessHeader,
   AccessIcon,
-  AccessPolicy,
   AccessStatus,
   AccessToolbar,
   type AccessFilter,
@@ -23,13 +23,19 @@ export function Accounts() {
   const [notice, setNotice] = useState('');
   const addButton = useRef<HTMLButtonElement>(null);
   const state = accounts.state;
+  const teams = state?.teams ?? [];
+  const teamNames = (teamIds: string[]) =>
+    teams
+      .filter((team) => teamIds.includes(team.id))
+      .map((team) => team.name)
+      .join(', ');
   const account = state?.accounts.find((item) => item.id === selected);
   const enabled = state?.accounts.filter((item) => item.enabled).length ?? 0;
   const visible =
     state?.accounts.filter(
       (item) =>
         (filter === 'all' || item.enabled === (filter === 'enabled')) &&
-        `${item.name} ${item.email} ${item.team}`
+        `${item.name} ${item.email} ${teamNames(item.teamIds)}`
           .toLowerCase()
           .includes(query.trim().toLowerCase()),
     ) ?? [];
@@ -93,29 +99,27 @@ export function Accounts() {
               </strong>
             </div>
             <div>
-              <span>Authentication mode</span>
+              <span>Workstation access</span>
               <strong className="access-summary-mode">
-                {state.requireDeviceTokens ? 'Individual' : 'Transition'}
-                <small>
-                  {state.requireDeviceTokens
-                    ? 'A token for each workstation'
-                    : 'Shared keys still accepted'}
-                </small>
+                Individual tokens
+                <small>A token for each workstation</small>
               </strong>
             </div>
           </div>
-          <AccessPolicy
-            title="Individual workstation tokens"
-            enabled={state.requireDeviceTokens}
-            description={
-              state.requireDeviceTokens
-                ? 'Activity and Brain MCP require a token assigned to a developer. Dashboard access stays separate.'
-                : 'Shared keys are still accepted. Require individual tokens once every workstation has its own.'
-            }
-            busy={accounts.busy}
-            action={state.requireDeviceTokens ? 'Allow shared keys' : 'Require individual tokens'}
-            onChange={() => void accounts.requireTokens(!state.requireDeviceTokens)}
-          />
+          <section className="access-policy">
+            <span className="access-policy-icon">
+              <AccessIcon name="shield" />
+            </span>
+            <div>
+              <h2>
+                Individual workstation tokens <AccessStatus tone="good">Required</AccessStatus>
+              </h2>
+              <p>
+                Activity and Brain MCP require a token assigned to a developer. Generate one for
+                each workstation below.
+              </p>
+            </div>
+          </section>
           {accounts.issued && (
             <IssuedToken
               key={accounts.issued.token.id}
@@ -123,6 +127,14 @@ export function Accounts() {
               close={accounts.clearIssued}
             />
           )}
+          <TeamManager
+            teams={teams}
+            accounts={state.accounts}
+            busy={accounts.busy}
+            save={accounts.saveTeam}
+            remove={accounts.deleteTeam}
+            notify={setNotice}
+          />
           <div className={`access-account-layout${selected ? ' editing' : ''}`}>
             <section className="access-panel access-collection" aria-label="Developer accounts">
               <div className="access-collection-heading">
@@ -199,8 +211,8 @@ export function Accounts() {
                           <strong>{item.name}</strong>
                           <span>{item.email}</span>
                           <small>
-                            {item.team || 'No team'} <span>·</span> {activeTokens} active{' '}
-                            {activeTokens === 1 ? 'token' : 'tokens'}
+                            {teamNames(item.teamIds) || 'No teams'} <span>·</span> {activeTokens}{' '}
+                            active {activeTokens === 1 ? 'token' : 'tokens'}
                           </small>
                         </span>
                         <AccessStatus tone={item.enabled ? 'good' : 'muted'}>
@@ -221,6 +233,7 @@ export function Accounts() {
                 <AccountEditor
                   key={account ? JSON.stringify(account) : 'new'}
                   account={account}
+                  teams={teams}
                   busy={accounts.busy}
                   close={closeEditor}
                   save={async (input, id) => {

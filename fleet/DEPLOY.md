@@ -1,8 +1,8 @@
 # Fleet deploy — central server, TLS, auth
 
 Use [Accounts and workstation access](../ACCOUNTS.md) to enroll developers without
-SSO. Require individual tokens after migrating their workstations. The shared keys
-below remain the browser/admin bootstrap and optional legacy transition mode.
+SSO. Individual workstation tokens are always required for telemetry and Brain MCP.
+The server credentials below protect browser viewing and administration separately.
 
 Goal: one dashboard the team's Codex and Claude Code clients point at. TLS is terminated by a
 **Caddy** reverse proxy (automatic HTTPS); the Node server stays plain HTTP behind
@@ -16,7 +16,7 @@ their clients or authorize their repositories.
 ```
  developers' Macs ──https──►  Caddy (:443, auto-TLS)  ──http──►  aad server (:4318)
    OTLP + hooks                agents.example.com                 (Node, systemd)
-      ▲ INGEST_TOKEN                                              ANONYMIZE=1
+      ▲ HARMONIE_TOKEN                                            ANONYMIZE=1
  viewers' browsers ──https──►  Caddy  ──►  dashboard UI (static) + /api,/live
       ▲ VIEWER_TOKEN
 ```
@@ -34,10 +34,8 @@ PORT=4318
 HOST=127.0.0.1
 ANONYMIZE=1
 ANONYMIZE_SALT=<random-stable-string>
-# Developers' hooks and telemetry present this token.
-INGEST_TOKEN=<long-random-token>
-# Dashboard viewers and Brain MCP clients present this separate token.
-VIEWER_TOKEN=<different-random-token>
+# Dashboard browsers present this token.
+VIEWER_TOKEN=<random-viewer-token>
 BRAIN_ADMIN_TOKEN=<separate-administrator-token>
 SESSION_TTL_MS=1800000
 DATABASE_URL=postgresql://<user>:<password>@<private-db-host>:5432/<database>
@@ -64,6 +62,15 @@ sudo systemctl enable --now aad
 ```
 
 ## 2. Build + host the UI
+
+For Harmony Brain submissions, any proxy in front of `/api/brain/mcp` must allow
+the server's `mcp.maxRequestBytes` from `server/src/brain/config.json` (64,000,000
+bytes by default). That envelope supports complete snapshots of up to 500 changed
+files and 10,000,000 UTF-8 source bytes, including JSON escaping. Keep this body
+limit specific to the MCP endpoint; telemetry and other API endpoints retain
+their existing limits. See [capacity settings](../BRAIN-MCP.md#submission-capacity).
+The bundled Docker dashboard generates its Nginx MCP limit from that shared JSON
+during the image build; rebuild the dashboard image after changing the limit.
 
 ```bash
 cd /opt/aad/ui && VITE_SERVER_URL=https://agents.example.com npm run build
@@ -105,10 +112,11 @@ npm run agents:projects -- --allow /absolute/path/to/project
 npm run agents:relay
 ```
 
-Configure the administrator-provided ingest and MCP authentication separately,
-in the local relay environment (`AAD_TOKEN`) and client MCP settings respectively,
-then restart the clients and complete the trust and account setup described in
-that guide. The installer does not provision shared-server credentials.
+Issue a token for each workstation in **Accounts**, and provide it as
+`HARMONIE_TOKEN` in the environment launching the local relay and coding clients.
+The installer configures both clients' MCP connection to use that variable.
+Restart the clients and complete the trust setup described in that guide.
+The installer does not issue credentials.
 The local relay filters every developer's selection before sending activity to
 this shared server. An empty selection sends nothing. The older `bootstrap.sh`
 delegates to this installer for Claude; do not keep older direct hooks or shell
@@ -118,13 +126,15 @@ exports alongside it. Hook payloads contain structural metadata, not prompt or t
 
 The dashboard administrator generates independent cryptographically random values
 (for example, 32 random bytes each) using their secret-management tooling. These
-are deployment bootstrap credentials. The Accounts page separately enrolls
-developers and issues their individual workstation tokens.
-Store them in the server's protected environment: `INGEST_TOKEN` authorizes telemetry,
-`VIEWER_TOKEN` authorizes viewers and Brain clients, and `BRAIN_ADMIN_TOKEN` authorizes
-Brain administration. Distribute only the appropriate credential through your secure
-deployment channel. Relays use `AAD_TOKEN=INGEST_TOKEN`; Brain clients use
-`BRAIN_ACCESS_TOKEN=VIEWER_TOKEN`. These shared service keys do not identify a person.
+are deployment bootstrap credentials. Store `VIEWER_TOKEN` and `BRAIN_ADMIN_TOKEN`
+in the server's protected environment for browser viewing and Brain administration.
+These browser credentials do not authenticate developer agents.
+
+The Accounts page enrolls developers and issues individual workstation tokens.
+Distribute each issued token securely to its workstation and make it available as
+`HARMONIE_TOKEN` to the relay and MCP clients. The server stores only its digest;
+it does not need the workstation's secret in its environment. Revocation and account
+disabling apply immediately to subsequent agent requests.
 
 Installed hooks automatically start the local relay, which persists filtered events
 and retries temporary dashboard outages. See [delivery limits and diagnostics](SETUP.md#delivery-during-outages).
@@ -145,8 +155,9 @@ and do not distribute or record token-bearing URLs as ordinary links.
 ## Notes
 
 - **Auth is app-enforced**, so even if the port were exposed, ingest/viewer routes
-  reject tokenless requests. Keep the two tokens distinct and rotate by editing
-  `/etc/aad.env` + `systemctl restart aad`.
+  reject tokenless requests. Keep browser and administrator credentials distinct;
+  rotate those by editing `/etc/aad.env` and restarting the service. Manage developer
+  token issuance and revocation in Accounts without restarting the server.
 - **Storage:** `DATABASE_URL` selects PostgreSQL; without it the server uses SQLite.
   Run one application worker. Follow [POSTGRES.md](../POSTGRES.md) for explicit
   migration, backups and the separate local Docker database.

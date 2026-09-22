@@ -125,14 +125,15 @@ export function codexTelemetry(text, url) {
   return existing + (existing ? (existing.endsWith('\n') ? '\n' : '\n\n') : '') + block;
 }
 
-function hookCommand(nodePath, wrapper, platform) {
+function hookCommand(nodePath, wrapper, platform, client) {
   if (platform === 'win32') {
-    // Both Codex's command runner and Claude's Bash runner accept quoted paths
-    // with forward slashes; avoid shell-specific environment assignments.
+    // Codex runs hooks in PowerShell, which needs the call operator before a
+    // quoted executable. Claude uses Bash and must keep the plain command.
     const paths = [nodePath, wrapper].map((path) => path.replaceAll('\\', '/'));
     if (paths.some((path) => /["\r\n%$`]/.test(path)))
       throw new Error('Unsupported character in hook path.');
-    return paths.map((path) => `"${path}"`).join(' ');
+    const command = paths.map((path) => `"${path}"`).join(' ');
+    return client === 'codex' ? `& ${command}` : command;
   }
   return [nodePath, wrapper].map((path) => "'" + path.replaceAll("'", "'\\''") + "'").join(' ');
 }
@@ -167,7 +168,6 @@ export async function setup({
   clients = ['codex', 'claude'],
   codexClient = 'desktop',
   team = '',
-  individualToken = false,
   apply = false,
   nodePath = process.execPath,
   platform = process.platform,
@@ -224,7 +224,7 @@ export async function setup({
       wrapper,
       wrapperSource(client, client === 'codex' ? codexClient : 'cli', relayUrl, team),
     );
-    const command = hookCommand(nodePath, wrapper, platform);
+    const command = hookCommand(nodePath, wrapper, platform, client);
     const settingsPath =
       client === 'codex' ? join(codexHome, 'hooks.json') : join(claudeHome, 'settings.json');
     const originalSettings = await readOptional(settingsPath);
@@ -261,10 +261,10 @@ export async function setup({
       let config = codexTelemetry(original, relayUrl);
       const section =
         /^\s*\[mcp_servers\.["']?harmony-brain["']?\s*\][^\S\r\n]*\r?\n[\s\S]*?(?=^\s*\[|$(?![\s\S]))/m;
-      const tokenLine = individualToken ? 'bearer_token_env_var = "HARMONIE_TOKEN"\n' : '';
+      const tokenLine = 'bearer_token_env_var = "HARMONIE_TOKEN"\n';
       if (!/^\s*\[mcp_servers\.["']?harmony-brain["']?\s*\]/m.test(original)) {
-        config += `\n[mcp_servers.harmony-brain]\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n${tokenLine}`;
-      } else if (individualToken) {
+        config += `\n[mcp_servers.harmony-brain]\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n${tokenLine}\n`;
+      } else {
         if (
           /^\s*\[mcp_servers\.["']?harmony-brain["']?\./m.test(original) ||
           /(?:http_headers|env_http_headers)\s*=/.test(original.match(section)?.[0] ?? '')
@@ -274,13 +274,11 @@ export async function setup({
           );
         }
         config = config.replace(section, (block) => {
-          const other = block.replace(/^\s*(?:url|bearer_token_env_var)\s*=.*\r?\n/gm, '');
+          const other = block.replace(/^[\t ]*(?:url|bearer_token_env_var)\s*=.*(?:\r?\n|$)/gm, '');
           return (
             other.trimEnd() + `\nurl = ${JSON.stringify(`${url}/api/brain/mcp`)}\n${tokenLine}\n`
           );
         });
-      } else {
-        warnings.push('Existing Codex harmony-brain MCP connection preserved.');
       }
       planned.set(path, config);
     } else {
@@ -293,15 +291,11 @@ export async function setup({
       const original = await readOptional(path);
       const config = parseSettings(original, path);
       config.mcpServers = object(config.mcpServers ?? {}, 'mcpServers');
-      if (!config.mcpServers['harmony-brain'] || individualToken) {
-        config.mcpServers['harmony-brain'] = {
-          type: 'http',
-          url: `${url}/api/brain/mcp`,
-          ...(individualToken ? { headers: { Authorization: 'Bearer ${HARMONIE_TOKEN}' } } : {}),
-        };
-      } else {
-        warnings.push('Existing Claude harmony-brain MCP connection preserved.');
-      }
+      config.mcpServers['harmony-brain'] = {
+        type: 'http',
+        url: `${url}/api/brain/mcp`,
+        headers: { Authorization: 'Bearer ${HARMONIE_TOKEN}' },
+      };
       planned.set(path, serializeSettings(original, config, path));
     }
   }
@@ -353,7 +347,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         'codex-client': { type: 'string' },
         project: { type: 'string', multiple: true },
         'relay-port': { type: 'string' },
-        'individual-token': { type: 'boolean', default: false },
         apply: { type: 'boolean', default: false },
       },
     });
@@ -361,7 +354,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       url: values.url,
       clients: values.clients?.split(','),
       team: values.team,
-      individualToken: values['individual-token'],
       codexClient: values['codex-client'],
       projects: values.project,
       relayPort: values['relay-port'] === undefined ? undefined : Number(values['relay-port']),

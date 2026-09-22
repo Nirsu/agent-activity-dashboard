@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test, { after } from 'node:test';
 import { gzipSync } from 'node:zlib';
+import Database from 'better-sqlite3';
+import type { LightMyRequestResponse } from 'fastify';
 import { brainConfig } from './brain/config.js';
 
 const directory = await mkdtemp(resolve(tmpdir(), 'aad-agent-routes-'));
@@ -15,12 +17,22 @@ Object.assign(process.env, {
   BRAIN_DB_PATH: resolve(directory, 'brain.db'),
   BRAIN_PROJECTS_PATH: resolve(directory, 'projects.json'),
   BRAIN_SYNC_ENABLED: '0',
-  INGEST_TOKEN: '',
   VIEWER_TOKEN: '',
   COST_LEDGER: '0',
 });
 
 const { buildApp } = await import('./index.js');
+const { AccessStore } = await import('./access/store.js');
+const access = new AccessStore(resolve(directory, 'access.db'));
+await access.init();
+const account = await access.saveAccount(
+  { name: 'Route fixture', email: 'routes@example.test', teamIds: [], enabled: true },
+  'test',
+);
+const issued = await access.issue(account.id, 'Route workstation', null, 'test');
+const agentHeaders = { authorization: `Bearer ${issued.secret}` };
+const devicePrefix = `${account.id}/${issued.token.id}/`;
+await access.close();
 
 test('replayed hook events keep their original time and stable ID', async () => {
   const app = await buildApp();
@@ -33,11 +45,11 @@ test('replayed hook events keep their original time and stable ID', async () => 
       event_id: 'offline-event',
       timestamp,
     };
-    await app.inject({ method: 'POST', url: '/activity', payload });
-    await app.inject({ method: 'POST', url: '/activity', payload });
+    await app.inject({ method: 'POST', url: '/activity', headers: agentHeaders, payload });
+    await app.inject({ method: 'POST', url: '/activity', headers: agentHeaders, payload });
     const events = (await app.inject('/api/state'))
       .json()
-      .recentEvents.filter((event: { id: string }) => event.id === 'offline-event');
+      .recentEvents.filter((event: { id: string }) => event.id === `${devicePrefix}offline-event`);
     assert.equal(events.length, 1);
     assert.equal(events[0].ts, timestamp);
   } finally {
@@ -79,7 +91,12 @@ test('hook ingestion exposes child lifecycle and hierarchy over the public state
   const app = await buildApp();
   try {
     const send = (payload: Record<string, unknown>) =>
-      app.inject({ method: 'POST', url: '/activity', payload: { provider: 'claude', ...payload } });
+      app.inject({
+        method: 'POST',
+        url: '/activity',
+        headers: agentHeaders,
+        payload: { provider: 'claude', ...payload },
+      });
     await send({ event: 'session_start', session_id: 'hierarchy-root', session_role: 'main' });
     await send({
       event: 'subagent_start',
@@ -93,9 +110,10 @@ test('hook ingestion exposes child lifecycle and hierarchy over the public state
     const state = (await app.inject('/api/state')).json();
     assert.equal(state.aggregate.activeSessions, 1);
     const child = state.sessions.find(
-      (item: { sessionId: string }) => item.sessionId === 'claude:hierarchy-root/agent:child',
+      (item: { sessionId: string }) =>
+        item.sessionId === `claude:${devicePrefix}hierarchy-root/agent:child`,
     );
-    assert.equal(child.parentSessionId, 'claude:hierarchy-root');
+    assert.equal(child.parentSessionId, `claude:${devicePrefix}hierarchy-root`);
     assert.equal(child.agentType, 'Explore');
     assert.equal(child.status, 'thinking');
     assert.doesNotMatch(JSON.stringify(state), /DO-NOT-STORE/);
@@ -109,6 +127,94 @@ test('hook ingestion exposes child lifecycle and hierarchy over the public state
     assert.ok(stopped.sessions.find((item: { endedAt?: number }) => item.endedAt));
   } finally {
     await app.close();
+  }
+});
+
+test('authenticated local Codex logs gain structural metadata before account attribution while remote requests cannot read it', async () => {
+  const { config } = await import('./config.js');
+  const { agentLabel } = await import('./identity.js');
+  const previousMetadataPath = config.codexMetadataDb;
+  const path = resolve(directory, 'local-codex-metadata.sqlite');
+  const db = new Database(path);
+  db.exec(
+    'CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, git_branch TEXT, preview TEXT)',
+  );
+  const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?)');
+  for (const id of ['local-metadata', 'remote-ip-metadata', 'remote-host-metadata']) {
+    insert.run(
+      id,
+      JSON.stringify({
+        subagent: { thread_spawn: { parent_thread_id: 'local-parent', agent_role: 'explorer' } },
+      }),
+      '/private/local-project',
+      'local-branch',
+      'PRIVATE PROMPT MUST NOT APPEAR',
+    );
+  }
+  db.close();
+  config.codexMetadataDb = path;
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+  try {
+    app = await buildApp();
+    for (const [id, remoteAddress, host] of [
+      ['local-metadata', '127.0.0.1', 'localhost:4318'],
+      ['remote-ip-metadata', '192.0.2.10', 'localhost:4318'],
+      ['remote-host-metadata', '127.0.0.1', 'dashboard.example.test'],
+    ]) {
+      const response: LightMyRequestResponse = await app.inject({
+        method: 'POST',
+        url: '/v1/logs',
+        remoteAddress,
+        headers: { ...agentHeaders, host },
+        payload: {
+          resourceLogs: [
+            {
+              scopeLogs: [
+                {
+                  logRecords: [
+                    {
+                      attributes: [
+                        { key: 'event.name', value: { stringValue: 'codex.api_request' } },
+                        { key: 'conversation.id', value: { stringValue: id } },
+                        { key: 'user.email', value: { stringValue: 'forged@example.test' } },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      });
+      assert.equal(response.statusCode, 200, `${id}: ${response.body}`);
+    }
+    const state = (await app.inject('/api/state')).json();
+    const local = state.sessions.find(
+      (session: { sessionId: string }) =>
+        session.sessionId === `codex:${devicePrefix}local-metadata`,
+    );
+    assert.ok(local);
+    assert.equal(local.parentSessionId, `codex:${devicePrefix}local-parent`);
+    assert.equal(local.sessionRole, 'subagent');
+    assert.equal(local.agentType, 'explorer');
+    assert.equal(local.repo, 'local-project');
+    assert.equal(local.branch, 'local-branch');
+    assert.equal(local.agent, agentLabel(`account:${account.id}`));
+    for (const id of ['remote-ip-metadata', 'remote-host-metadata']) {
+      const remote = state.sessions.find(
+        (session: { sessionId: string }) => session.sessionId === `codex:${devicePrefix}${id}`,
+      );
+      assert.ok(remote);
+      assert.equal(remote.parentSessionId, undefined, id);
+      assert.equal(remote.agentType, undefined, id);
+      assert.equal(remote.repo, undefined, id);
+      assert.equal(remote.branch, undefined, id);
+      assert.equal(remote.agent, agentLabel(`account:${account.id}`));
+    }
+    assert.doesNotMatch(JSON.stringify(state), /PRIVATE PROMPT|forged@example/);
+  } finally {
+    await app?.close();
+    config.codexMetadataDb = previousMetadataPath;
   }
 });
 
@@ -179,7 +285,11 @@ test('gzip parsing enforces the decompressed route limit and rejects malformed b
       const response = await app.inject({
         method: 'POST',
         url,
-        headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        headers: {
+          ...agentHeaders,
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+        },
         payload,
       });
       assert.equal(response.statusCode, 413, response.body);
@@ -190,7 +300,11 @@ test('gzip parsing enforces the decompressed route limit and rejects malformed b
           await app.inject({
             method: 'POST',
             url: '/v1/logs',
-            headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+            headers: {
+              ...agentHeaders,
+              'content-type': 'application/json',
+              'content-encoding': 'gzip',
+            },
             payload,
           })
         ).statusCode,
@@ -202,7 +316,11 @@ test('gzip parsing enforces the decompressed route limit and rejects malformed b
         await app.inject({
           method: 'POST',
           url: '/v1/logs',
-          headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+          headers: {
+            ...agentHeaders,
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+          },
           payload: gzipSync(Buffer.from('{}')),
         })
       ).statusCode,

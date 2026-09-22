@@ -185,6 +185,8 @@ export class BrainAgents {
   private running: Promise<void> | null = null;
   private activeRunId: string | null = null;
   private readonly projectsPath: string;
+  private readonly loadProjects: () => Promise<Project[]>;
+  private readonly projectStatus: BrainAgentsOptions['projectStatus'];
   private readonly dbPath: string;
   private readonly model: string;
   private readonly provider = 'openai';
@@ -204,6 +206,8 @@ export class BrainAgents {
       options.projectsPath ??
       process.env.BRAIN_PROJECTS_PATH ??
       resolve(serverRoot, '../brain.projects.json');
+    this.loadProjects = options.loadProjects ?? (() => readProjects(this.projectsPath));
+    this.projectStatus = options.projectStatus;
     this.model = options.model ?? process.env.BRAIN_MODEL ?? '';
     this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? '';
     this.requestTimeoutMs =
@@ -452,12 +456,12 @@ export class BrainAgents {
     let projects: Project[] = [];
     let reason = '';
     try {
-      projects = await readProjects(this.projectsPath);
+      projects = await this.loadProjects();
     } catch {
-      reason = 'Invalid project configuration: check brain.projects.json.';
+      reason = 'Invalid project configuration: check Projects and the legacy import configuration.';
     }
     if (!reason && projects.length === 0) {
-      reason = 'Add a project to brain.projects.json and register its sources in Memory.';
+      reason = 'Add a project in Projects and register its approved sources in Memory.';
     }
     if (!reason) {
       reason = this.configurationError();
@@ -479,6 +483,11 @@ export class BrainAgents {
         scope: project.scope,
         codePaths: project.codePaths,
         specifications: project.specs.length,
+        specificationPaths: project.specs.map((specification) => specification.path),
+        repositoryRemote: project.repositoryRemote,
+        enabled: project.enabled !== false,
+        codeAccess: project.repositoryRemote ? 'github' : 'local',
+        readiness: this.projectStatus?.(project.id),
       })),
       runs: rows.map((row) => {
         const { sources, requirements, findings, ...fields } = row.data;
@@ -495,7 +504,7 @@ export class BrainAgents {
 
   async detail(id: string) {
     const run = this.getRun(id);
-    const projects = await readProjects(this.projectsPath);
+    const projects = await this.loadProjects();
     const project = projects.find((project) => project.id === run.projectId);
     const projectsState = await this.projectStates(project ? [project] : []);
 
@@ -508,7 +517,7 @@ export class BrainAgents {
   async graphSnapshots() {
     let projects: Project[];
     try {
-      projects = await readProjects(this.projectsPath);
+      projects = await this.loadProjects();
     } catch {
       return [];
     }
@@ -534,9 +543,12 @@ export class BrainAgents {
     if (commit && !/^[a-f0-9]{40,64}$/i.test(commit)) {
       fail('Use a full Git SHA.');
     }
-    const project = (await readProjects(this.projectsPath)).find((entry) => entry.id === projectId);
+    const project = (await this.loadProjects()).find((entry) => entry.id === projectId);
     if (!project) {
       fail('Project is not registered.', 404);
+    }
+    if (project.enabled === false) {
+      fail('This project is disabled. Enable it in Projects before requesting an analysis.', 409);
     }
     const capture = { commit, sources: [] as Source[], changedFiles: [] as string[] };
     await captureProjectSources(capture, project);
@@ -588,10 +600,13 @@ export class BrainAgents {
       }
     }
 
-    const projects = await readProjects(this.projectsPath);
+    const projects = await this.loadProjects();
     const project = projects.find((project) => project.id === projectId);
     if (!project) {
       fail('Project is not registered.', 404);
+    }
+    if (project.enabled === false) {
+      fail('This project is disabled. Enable it in Projects before requesting an analysis.', 409);
     }
     if (submittedFiles && (!commit || baseCommit)) {
       fail('A submitted snapshot requires one baseline commit and no commit range.');
@@ -731,8 +746,11 @@ export class BrainAgents {
   ) {
     await this.requireCurrentContext(run);
     await this.progress(run, stages[role]);
-    if (JSON.stringify(input).length > brainConfig.analysis.maxInputCharacters) {
-      fail('AI input is too large: narrow the scope.');
+    const inputCharacters = JSON.stringify(input).length;
+    if (inputCharacters > brainConfig.analysis.maxInputCharacters) {
+      fail(
+        `AI input contains ${inputCharacters} characters; the configured limit is ${brainConfig.analysis.maxInputCharacters} characters (analysis.maxInputCharacters). No validated results.`,
+      );
     }
 
     run.calls ??= [];
@@ -815,11 +833,15 @@ export class BrainAgents {
           size + Buffer.byteLength(source.lines.map(({ quote }) => quote).join('\n')),
         0,
       );
-      if (
-        run.sources.length > brainConfig.analysis.maxSources ||
-        selectedBytes > brainConfig.analysis.maxSourceBytes
-      ) {
-        fail('Retrieved scope is too large: narrow the feature or selected source pages.');
+      if (sources.length > brainConfig.analysis.maxSources) {
+        fail(
+          `Retrieved references contain ${sources.length} sources; the evidence limit is ${brainConfig.analysis.maxSources} sources (analysis.maxSources).`,
+        );
+      }
+      if (selectedBytes > brainConfig.analysis.maxSourceBytes) {
+        fail(
+          `Retrieved reference excerpts contain ${selectedBytes} UTF-8 bytes; the evidence limit is ${brainConfig.analysis.maxSourceBytes} bytes (analysis.maxSourceBytes).`,
+        );
       }
       await this.saveRun(run);
 

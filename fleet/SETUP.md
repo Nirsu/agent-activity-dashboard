@@ -1,9 +1,9 @@
 # Developer setup
 
 For [individual workstation credentials](../ACCOUNTS.md), provide `HARMONIE_TOKEN`
-to the clients' environment and add `--individual-token` during setup. The same
-token authenticates telemetry and Brain MCP. Separate ingest/viewer instructions
-below describe legacy shared-key mode.
+to the environment launching the clients and relay. Issue this token in **Accounts**
+before setup. The same token is required for telemetry and Brain MCP, including
+when the dashboard runs on localhost.
 
 Install Node.js 20 or later and the clients you use. Run this once per developer
 account and machine, not once per repository. The dashboard must be reachable.
@@ -23,15 +23,16 @@ agent activity until a repository is allowed. Select
 one client with `--clients codex` or `--clients claude`; use `--codex-client cli`
 for Codex CLI instead of desktop. Optional `--team stream-name` groups hook events.
 For a shared service, replace localhost with its HTTPS origin and configure the
-ingest/viewer authentication supplied by your administrator. Localhost always
+workstation token supplied by your administrator. Localhost always
 means the developer's own machine, not another developer's dashboard.
 
 The installer copies the bridge to `~/.config/harmonie-agents/` and uses an absolute
 Node path, including on Windows. Existing unrelated settings and hooks are kept;
 changed files receive sibling `.bak.*` backups. Rerunning the same setup makes no
 changes and preserves the selected projects and dashboard URL. An existing unmanaged Codex OTel section stops the installation so its
-collector configuration can be merged deliberately. Existing Brain MCP entries
-are preserved, so verify their URL if changing servers. Moving Node requires a
+collector configuration can be merged deliberately. Brain MCP entries are configured
+to use `HARMONIE_TOKEN`; existing custom Codex Brain headers require a manual merge.
+Verify the resulting URL if changing servers. Moving Node requires a
 setup rerun. No credentials are printed or bundled into repository files.
 
 Restart the clients after setup. In Codex, inspect and trust the exact installed
@@ -119,9 +120,8 @@ The relay needs only Node and Git and can run from the installed
 `~/.config/harmonie-agents/relay.mjs` without this checkout.
 Use `--relay-port` during setup if 14318 is occupied.
 Restart the relay and clients after changing that port or upgrading an older relay.
-For a shared authenticated
-dashboard, provide its ingest token as `AAD_TOKEN` in the relay's environment;
-MCP authentication remains separate. An automatically started relay inherits this
+Provide `HARMONIE_TOKEN` in the relay's environment for every dashboard destination.
+MCP uses the same workstation token. An automatically started relay inherits this
 environment from the agent client. IT can also manage it as a per-user service.
 
 The relay authorizes a session from a lifecycle hook's working directory. It
@@ -194,10 +194,10 @@ dashboard, PostgreSQL, Cognee or a model API service locally.
 
 There are two separate registrations:
 
-| Registration               | Owner                                 | Purpose                                                                              |
-| -------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------ |
-| Brain project              | Administrator, once per project       | Stable project ID, allowed code paths, approved references and a server Git checkout |
-| Local repository selection | Developer, once per clone and machine | Consent to forward that clone's agent activity through the relay                     |
+| Registration               | Owner                                 | Purpose                                                                           |
+| -------------------------- | ------------------------------------- | --------------------------------------------------------------------------------- |
+| Brain project              | Administrator, once per project       | Stable project ID, allowed code paths, approved references and GitHub code access |
+| Local repository selection | Developer, once per clone and machine | Consent to forward that clone's agent activity through the relay                  |
 
 Registering a project in Brain does not authorize reading a developer's machine.
 Selecting a local clone does not register specifications or launch an analysis.
@@ -205,9 +205,10 @@ The deployed browser cannot discover or select local folders; selection currentl
 uses the local command below. There is no remote project-selection UI or central
 enforcement of the developer's allowlist in this pilot.
 
-1. The administrator supplies the shared HTTPS URL, `INGEST_TOKEN` for the relay
-   and the separate `VIEWER_TOKEN` for Brain clients. Register the Brain project
-   and make its baseline Git commits available in the server checkout.
+1. The administrator supplies the shared HTTPS URL and issues a workstation token
+   in **Accounts** for the developer. Register the GitHub repository in **Projects**
+   and approve its reference documents in Memory. The server retrieves published
+   Git commits on demand; imported local registrations retain their server checkout.
 2. Distribute this repository's setup bundle. Each developer installs once,
    substituting the real URL and an existing local clone:
 
@@ -215,12 +216,10 @@ enforcement of the developer's allowlist in this pilot.
    npm run agents:setup -- --url https://agents.example.com --project /absolute/path/to/project --apply
    ```
 
-3. Supply `AAD_TOKEN` to the relay from the developer's secure environment and
-   configure the Brain MCP connection with the viewer credential as described in
-   [Brain MCP authentication](../BRAIN-MCP.md#shared-claude-code-authentication).
-   The installer's default MCP connection contains only a URL; a protected
-   deployment also requires this authentication step. Existing MCP definitions
-   are preserved, so check their URL when moving from localhost to the server.
+3. Supply `HARMONIE_TOKEN` from the developer's secure environment to both the relay
+   and coding clients. The installer configures the Brain MCP connection to use this
+   variable. Check the effective URL and authentication when moving from localhost
+   to the server; see [Brain MCP authentication](../BRAIN-MCP.md#claude-code-authentication).
 4. Restart the agent clients and review the new or changed Codex hooks. The installed
    hooks start the relay automatically. IT can additionally configure a per-user
    service to keep it running before any agent client starts.
@@ -240,13 +239,11 @@ On macOS/Linux, the same installed scripts live under
 running relay for both providers. Every developer has their own selection;
 one person's paths do not enable anyone else's clone.
 
-Developer identity is separate from repository selection. The current server
-pseudonymizes the identity reported by the client; when none is supplied, it uses
-a session-based label. Hooks can report `AAD_USER`, while native telemetry can
-report a different account identity. The pilot does not reconcile these into a
-single developer account across Codex and Claude. Do not interpret session labels
-as a reliable developer headcount. Durable per-developer reporting requires a
-shared identity convention or an authenticated onboarding integration.
+Developer identity is separate from repository selection. The server uses the
+authenticated token's account and team instead of client-reported identity, and
+namespaces sessions per account and workstation. Accounts shows the activity label
+used when pseudonymization is enabled. Using the same workstation credential for
+Codex and Claude attributes both clients to that enrolled developer.
 
 For day-to-day work, hooks report session/tool state and native telemetry adds
 tokens and estimated cost. The repo/branch, branch-derived ticket, tool summary

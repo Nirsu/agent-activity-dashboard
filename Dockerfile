@@ -15,13 +15,16 @@ RUN npm ci --no-audit --no-fund $NPM_INSTALL_FLAGS
 
 COPY server server
 COPY fleet/repository-url.cjs fleet/repository-url.cjs
+COPY fleet/brain-paths.cjs fleet/brain-paths.cjs
 COPY ui ui
+COPY docker/nginx.conf docker/render-nginx.mjs docker/
 RUN npm run build
+RUN node docker/render-nginx.mjs /app/docker/nginx.generated.conf
 RUN npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS server
 
-# Brain reads a mounted Git checkout; credentials and sources stay outside the image.
+# Brain reads preserved checkouts or a persistent GitHub cache; credentials stay outside the image.
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory /sources/repo
@@ -39,6 +42,7 @@ COPY --from=build /app/server/package.json server/package.json
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/server/prompts server/prompts
 COPY --from=build /app/fleet/repository-url.cjs fleet/repository-url.cjs
+COPY --from=build /app/fleet/brain-paths.cjs fleet/brain-paths.cjs
 
 RUN mkdir -p /app/server/data && chown -R node:node /app/server/data
 USER node
@@ -51,7 +55,7 @@ CMD ["node", "server/dist/index.js"]
 
 FROM nginx:1.29-alpine AS dashboard
 
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/docker/nginx.generated.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/ui/dist /usr/share/nginx/html
 
 EXPOSE 8080

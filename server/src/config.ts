@@ -51,9 +51,8 @@ export const config = {
   // Pseudonymize identities (default on). Off only for a single-user local run.
   anonymize: bool('ANONYMIZE', true),
   anonymizeSalt: process.env.ANONYMIZE_SALT ?? 'aad-fleet',
-  // Auth: when set, ingest routes require INGEST_TOKEN and viewer routes
-  // (/api, /live) require VIEWER_TOKEN. Unset = open (localhost dev).
-  ingestToken: process.env.INGEST_TOKEN,
+  // Browser access uses an independent viewer key, or trusted local access.
+  // Agent endpoints always authenticate an issued workstation token.
   viewerToken: process.env.VIEWER_TOKEN,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
   jira: {

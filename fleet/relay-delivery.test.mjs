@@ -12,6 +12,24 @@ import { ensureRelay } from './ensure-relay.mjs';
 import { safeTelemetry } from './safe-telemetry.mjs';
 
 const limits = createRequire(import.meta.url)('./relay-config.json');
+process.env.HARMONIE_TOKEN = 'fixture-workstation-token';
+
+test('on-demand relay rejects a missing token before launching or reusing a process', async (t) => {
+  const f = await fixture(t);
+  const token = process.env.HARMONIE_TOKEN;
+  delete process.env.HARMONIE_TOKEN;
+  try {
+    await assert.rejects(
+      ensureRelay({
+        configPath: f.configPath,
+        launch: () => assert.fail('Must not launch without credentials'),
+      }),
+      /Set HARMONIE_TOKEN/,
+    );
+  } finally {
+    process.env.HARMONIE_TOKEN = token;
+  }
+});
 
 test('central filtering uses the captured Git origin, discards revoked repositories and retains events on policy outages', async (t) => {
   const f = await fixture(t);
@@ -192,7 +210,7 @@ test('queue respects removal, destination changes, expiry and reports capacity e
       delivered++;
       return new Response('{}');
     },
-    undefined,
+    'fixture-workstation-token',
     { ...limits, maxQueueEntries: 1 },
   );
   await queue.init();

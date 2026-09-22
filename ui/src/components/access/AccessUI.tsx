@@ -211,7 +211,7 @@ export function AccessPolicy({
         <h2>
           {title}
           <AccessStatus tone={enabled ? 'good' : 'warning'}>
-            {enabled ? 'Enabled' : 'Transition mode'}
+            {enabled ? 'Enabled' : 'Disabled'}
           </AccessStatus>
         </h2>
         <p>{description}</p>

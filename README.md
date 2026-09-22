@@ -97,6 +97,9 @@ npm run dev:ui
 ```
 
 The optional agent telemetry setup is separate from starting the app:
+issue a workstation token in **Accounts** and provide it as `HARMONIE_TOKEN` to
+the environment launching the clients and relay. It is required for telemetry
+and Brain MCP, including on localhost; see [Accounts](ACCOUNTS.md).
 `source ./otel-env.sh` is a Bash/Zsh helper for macOS/Linux. On Windows, configure
 the equivalent environment variables in the agent's environment; this helper
 is not required to start the dashboard or Brain.
@@ -108,22 +111,28 @@ guide includes user-level Codex OTel and hook setup.
 ## Local Docker
 
 The basic dashboard uses SQLite in Docker and runs behind one same-origin proxy on the local-only default
-port `18418`:
+port `18418`. Configure distinct random `VIEWER_TOKEN` and `BRAIN_ADMIN_TOKEN`
+values in `.env` first; container traffic goes through the proxy and requires
+browser authentication even when the published port is local:
 
 ```bash
 docker compose up --build -d
-npm run demo:seed
 ```
 
-Open [the dashboard](http://127.0.0.1:18418) in a browser.
+Open [Accounts](http://127.0.0.1:18418/#accounts) in a browser. Enter `VIEWER_TOKEN`
+in **Dashboard token** and `BRAIN_ADMIN_TOKEN` in **Administrator token** to unlock
+administration. Native localhost development without Docker can still bootstrap
+Accounts without those browser credentials.
 
 Override the port by setting `AAD_PORT=19000` in `.env` before starting Compose.
 SQLite history and the cost ledger live in the `aad-data` named volume and
 survive container restarts. `docker compose down` stops the stack without
 deleting that data; adding `--volumes` deletes it.
 
-`npm run demo:seed` adds one Claude and one Codex session to the live board for
-local evaluation. It sends only synthetic metadata.
+Create an account and workstation token in **Accounts**, then provide the issued
+token as `HARMONIE_TOKEN` in the terminal environment. `npm run demo:seed` adds one
+Claude and one Codex session to the live board for local evaluation using this
+credential. It sends only synthetic metadata.
 
 For agents using this Docker dashboard, run
 `npm run agents:setup -- --url http://127.0.0.1:18418 --apply`, select repositories

@@ -9,11 +9,23 @@ export interface DeveloperAccount {
   id: string;
   name: string;
   email: string;
-  team: string;
+  teamIds: string[];
   /** Retained only when reading older records; permissions are now shared. */
   projectIds?: string[];
   enabled: boolean;
   createdAt: string;
+}
+
+export interface ManagedTeam {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+interface LegacyTeamAlias {
+  legacyName: string;
+  id: string;
+  name: string;
 }
 
 export interface DeviceToken {
@@ -22,7 +34,7 @@ export interface DeviceToken {
   label: string;
   digest: string;
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
   revokedAt?: string;
   lastUsedAt?: string;
 }
@@ -30,6 +42,7 @@ export interface DeviceToken {
 export interface AccessPrincipal {
   account: DeveloperAccount;
   token: Omit<DeviceToken, 'digest'>;
+  teams: Pick<ManagedTeam, 'id' | 'name'>[];
 }
 
 export function accessError(message: string, statusCode = 400): never {
@@ -47,26 +60,73 @@ export class AccessStore {
       path,
       [
         'access_accounts',
+        'access_teams',
         'access_tokens',
         'access_audit',
         'access_settings',
         'access_repositories',
+        'access_brain_projects',
       ],
       3,
     );
   }
 
-  init() {
-    return this.storage.init();
+  async init() {
+    await this.storage.init();
+    try {
+      await this.storage.transaction(async () => {
+        // Keep existing accounts and credentials while replacing free-text team assignments.
+        await this.migrateTeams();
+        await this.storage.remove('access_settings', 'device-tokens');
+      });
+    } catch (error) {
+      await this.storage.close();
+      throw error;
+    }
   }
   close() {
     return this.storage.close();
   }
 
-  get requireDeviceTokens() {
-    return (
-      this.storage.get<{ required: boolean }>('access_settings', 'device-tokens')?.required ?? false
+  private async migrateTeams() {
+    type StoredAccount = Omit<DeveloperAccount, 'teamIds'> & { team?: string; teamIds?: string[] };
+    const teamsByName = new Map(this.teams().map((team) => [team.name.trim().toLowerCase(), team]));
+    const savedAliases = this.storage.get<LegacyTeamAlias[]>(
+      'access_settings',
+      'legacy-team-aliases',
     );
+    // Bootstrap installations already migrated by the first managed-team release once.
+    // Retain aliases after deletion so a reused name cannot inherit another team's history.
+    const aliases = new Map(
+      (savedAliases ?? this.teams().map(({ id, name }) => ({ legacyName: name, id, name }))).map(
+        (alias) => [alias.legacyName.trim().toLowerCase(), alias],
+      ),
+    );
+    for (const { data } of this.storage.entries<StoredAccount>('access_accounts')) {
+      if (Array.isArray(data.teamIds) && !('team' in data)) {
+        continue;
+      }
+      const { team: legacyTeam, ...account } = data;
+      const teamIds = Array.isArray(account.teamIds) ? [...new Set(account.teamIds)] : [];
+      const name = typeof legacyTeam === 'string' ? legacyTeam.trim() : '';
+      if (!Array.isArray(account.teamIds) && name) {
+        const key = name.toLowerCase();
+        let team = teamsByName.get(key);
+        if (!team) {
+          team = { id: randomUUID(), name, createdAt: new Date().toISOString() };
+          await this.storage.put('access_teams', team.id, team);
+          teamsByName.set(key, team);
+        }
+        teamIds.push(team.id);
+        if (!aliases.has(key)) {
+          aliases.set(key, { legacyName: name, id: team.id, name: team.name });
+        }
+      }
+      await this.storage.put('access_accounts', account.id, { ...account, teamIds });
+    }
+    if (!savedAliases || aliases.size !== savedAliases.length) {
+      await this.storage.put('access_settings', 'legacy-team-aliases', [...aliases.values()]);
+    }
   }
 
   snapshot() {
@@ -75,6 +135,7 @@ export class AccessStore {
         ...data,
         activityLabel: config.anonymize ? agentLabel(`account:${data.id}`) : `account:${data.id}`,
       })),
+      teams: this.teams(),
       tokens: this.storage
         .entries<DeviceToken>('access_tokens')
         .map(({ data }) => publicToken(data)),
@@ -84,10 +145,82 @@ export class AccessStore {
         )
         .slice(0, brainConfig.access.auditDisplayLimit)
         .map(({ data }) => data),
-      requireDeviceTokens: this.requireDeviceTokens,
       repositories: this.repositories(),
       filterRepositories: this.filterRepositories,
     };
+  }
+
+  teams(): ManagedTeam[] {
+    return this.storage.entries<ManagedTeam>('access_teams').map(({ data }) => data);
+  }
+
+  legacyTeamAliases(): ReadonlyMap<string, Pick<ManagedTeam, 'id' | 'name'>> {
+    const aliases =
+      this.storage.get<LegacyTeamAlias[]>('access_settings', 'legacy-team-aliases') ?? [];
+    return new Map(
+      aliases.map((alias) => {
+        const team = this.storage.get<ManagedTeam>('access_teams', alias.id);
+        return [
+          alias.legacyName.trim().toLowerCase(),
+          { id: alias.id, name: team?.name ?? alias.name },
+        ];
+      }),
+    );
+  }
+
+  teamsForAccount(accountId: string): AccessPrincipal['teams'] | undefined {
+    const account = this.storage.get<DeveloperAccount>('access_accounts', accountId);
+    if (!account) {
+      return undefined;
+    }
+    return account.teamIds.flatMap((id) => {
+      const team = this.storage.get<ManagedTeam>('access_teams', id);
+      return team ? [{ id: team.id, name: team.name }] : [];
+    });
+  }
+
+  async saveTeam(input: { name: string }, actor: string, id?: string) {
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    if (!name || name.length > 80) {
+      accessError('Team name must contain 1 to 80 characters.');
+    }
+    return this.storage.transaction(async () => {
+      const existing = id ? this.storage.get<ManagedTeam>('access_teams', id) : undefined;
+      if (id && !existing) {
+        accessError('Team not found.', 404);
+      }
+      if (
+        this.teams().some(
+          (team) => team.id !== id && team.name.toLowerCase() === name.toLowerCase(),
+        )
+      ) {
+        accessError('A team with this name already exists.', 409);
+      }
+      const team: ManagedTeam = {
+        id: existing?.id ?? randomUUID(),
+        name,
+        createdAt: existing?.createdAt ?? new Date().toISOString(),
+      };
+      await this.storage.put('access_teams', team.id, team);
+      await this.audit(existing ? 'team.updated' : 'team.created', team.id, actor);
+      return team;
+    });
+  }
+
+  async removeTeam(id: string, actor: string) {
+    return this.storage.transaction(async () => {
+      if (!this.storage.get<ManagedTeam>('access_teams', id)) {
+        accessError('Team not found.', 404);
+      }
+      const assigned = this.storage
+        .entries<DeveloperAccount>('access_accounts')
+        .some(({ data }) => data.teamIds.includes(id));
+      if (assigned) {
+        accessError('Remove all account assignments before deleting this team.', 409);
+      }
+      await this.storage.remove('access_teams', id);
+      await this.audit('team.deleted', id, actor);
+    });
   }
 
   private audit(action: string, target: string, actor: string) {
@@ -168,6 +301,15 @@ export class AccessStore {
 
   async saveAccount(input: Omit<DeveloperAccount, 'id' | 'createdAt'>, actor: string, id?: string) {
     return this.storage.transaction(async () => {
+      if (
+        !Array.isArray(input.teamIds) ||
+        input.teamIds.some(
+          (teamId) =>
+            typeof teamId !== 'string' || !this.storage.get<ManagedTeam>('access_teams', teamId),
+        )
+      ) {
+        accessError('Select existing teams for this account.');
+      }
       const existing = id ? this.storage.get<DeveloperAccount>('access_accounts', id) : undefined;
       if (id && !existing) accessError('Account not found.', 404);
       const duplicate = this.storage
@@ -176,6 +318,7 @@ export class AccessStore {
       if (duplicate) accessError('An account with this email already exists.', 409);
       const account = {
         ...input,
+        teamIds: [...new Set(input.teamIds)],
         id: existing?.id ?? randomUUID(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),
       };
@@ -195,7 +338,22 @@ export class AccessStore {
     });
   }
 
-  async issue(accountId: string, label: string, expiresInDays: number, actor: string) {
+  async issue(
+    accountId: string,
+    label: string,
+    expiresInDays: number | null | undefined,
+    actor: string,
+  ) {
+    if (
+      expiresInDays != null &&
+      (!Number.isInteger(expiresInDays) ||
+        expiresInDays < 1 ||
+        expiresInDays > brainConfig.access.maxTokenDays)
+    ) {
+      accessError(
+        `Token expiration must be a whole number from 1 to ${brainConfig.access.maxTokenDays} days, or no expiration.`,
+      );
+    }
     return this.storage.transaction(async () => {
       const account = this.storage.get<DeveloperAccount>('access_accounts', accountId);
       if (!account?.enabled) accessError('An active account is required.');
@@ -207,7 +365,10 @@ export class AccessStore {
         label,
         digest: digest(secret),
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + expiresInDays * 86400000).toISOString(),
+        expiresAt:
+          expiresInDays == null
+            ? null
+            : new Date(Date.now() + expiresInDays * 86400000).toISOString(),
       };
       await this.storage.put('access_tokens', id, token);
       await this.audit('token.created', id, actor);
@@ -229,27 +390,17 @@ export class AccessStore {
     });
   }
 
-  async setRequired(required: boolean, actor: string) {
-    await this.storage.transaction(async () => {
-      if (
-        required &&
-        !this.storage.entries<DeviceToken>('access_tokens').some(({ data }) => this.active(data))
-      ) {
-        accessError('Create an active workstation token before requiring individual tokens.');
-      }
-      await this.storage.put('access_settings', 'device-tokens', { required });
-      await this.audit(
-        required ? 'individual-tokens.required' : 'legacy-access.allowed',
-        'device-tokens',
-        actor,
-      );
-    });
-  }
-
   private active(token: DeviceToken) {
+    const expiration = token.expiresAt;
+    const timestamp = typeof expiration === 'string' ? Date.parse(expiration) : NaN;
+    const notExpired =
+      expiration === null ||
+      (Number.isFinite(timestamp) &&
+        new Date(timestamp).toISOString() === expiration &&
+        timestamp > Date.now());
     return (
       !token.revokedAt &&
-      Date.parse(token.expiresAt) > Date.now() &&
+      notExpired &&
       this.storage.get<DeveloperAccount>('access_accounts', token.accountId)?.enabled
     );
   }
@@ -269,9 +420,11 @@ export class AccessStore {
         token.lastUsedAt = new Date().toISOString();
         await this.storage.put('access_tokens', token.id, token);
       }
+      const account = this.storage.get<DeveloperAccount>('access_accounts', token.accountId)!;
       return {
-        account: this.storage.get<DeveloperAccount>('access_accounts', token.accountId)!,
+        account,
         token: publicToken(token),
+        teams: this.teamsForAccount(account.id)!,
       };
     });
   }

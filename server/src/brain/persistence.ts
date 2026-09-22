@@ -7,10 +7,12 @@ import { getPostgresPool } from '../persistence/postgres.js';
 
 export type BrainTable =
   | 'access_accounts'
+  | 'access_teams'
   | 'access_tokens'
   | 'access_audit'
   | 'access_settings'
   | 'access_repositories'
+  | 'access_brain_projects'
   | 'brain_agent_runs'
   | 'brain_activity_events'
   | 'brain_memory_sources'
@@ -223,13 +225,18 @@ export class BrainStorage {
   }
 
   removeDatasetBinding(id: string): Promise<void> {
+    return this.remove('brain_memory_datasets', id);
+  }
+
+  remove(table: BrainTable, id: string): Promise<void> {
     const operation = async () => {
       this.healthy();
       if (this.sqlite) {
-        this.sqlite.prepare('DELETE FROM brain_memory_datasets WHERE capture_id=?').run(id);
+        const column = table === 'brain_memory_datasets' ? 'capture_id' : 'id';
+        this.sqlite.prepare(`DELETE FROM ${table} WHERE ${column}=?`).run(id);
       } else {
-        await this.client!.query('DELETE FROM brain_memory_datasets WHERE id=$1', [id]);
-        (this.context.getStore()?.records ?? this.records).get('brain_memory_datasets')!.delete(id);
+        await this.client!.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+        (this.context.getStore()?.records ?? this.records).get(table)!.delete(id);
       }
     };
     return this.context.getStore() ? operation() : this.serialize(operation);

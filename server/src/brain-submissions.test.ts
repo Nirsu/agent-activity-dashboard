@@ -38,13 +38,56 @@ test('submitted code rejects unsafe paths, duplicates, binaries, excessive size 
     [],
     [{ path: 'hooks/a.js', content: 42 }],
     [{ path: 'hooks/a.js', content: 'a\0b' }],
-    [{ path: 'hooks/a.js', content: 'x'.repeat(brainConfig.codeRetrieval.maxSubmissionBytes + 1) }],
+    [{ path: 'hooks/a.js', content: 'x'.repeat(brainConfig.submission.maxFileBytes + 1) }],
     [
       { path: 'hooks/a.js', content: 'x' },
       { path: 'hooks/a.js', content: null },
     ],
   ])
     assert.throws(() => validateSubmittedFiles(files, project));
+});
+
+test('snapshot limits count UTF-8 bytes before redaction and count deletions as files', () => {
+  const original = { ...brainConfig.submission };
+  Object.assign(brainConfig.submission, { maxFiles: 3, maxBytes: 8, maxFileBytes: 6 });
+  try {
+    const accepted = [
+      { path: 'hooks/a.js', content: 'ééé' },
+      { path: 'hooks/b.js', content: 'é' },
+      { path: 'hooks/deleted.js', content: null },
+    ];
+    assert.equal(validateSubmittedFiles(accepted, project).length, 3);
+    assert.throws(
+      () => validateSubmittedFiles([{ path: 'hooks/a.js', content: 'éééé' }], project),
+      /8 UTF-8 bytes.*6 bytes per file.*submission.maxFileBytes/,
+    );
+    assert.throws(
+      () =>
+        validateSubmittedFiles(
+          [
+            { path: 'hooks/a.js', content: 'ééé' },
+            { path: 'hooks/b.js', content: 'éé' },
+          ],
+          project,
+        ),
+      /10 UTF-8 bytes.*8 bytes.*submission.maxBytes/,
+    );
+    assert.throws(
+      () =>
+        validateSubmittedFiles(
+          [...accepted, { path: 'hooks/also-deleted.js', content: null }],
+          project,
+        ),
+      /4 files.*3 files.*submission.maxFiles/,
+    );
+    assert.throws(
+      () =>
+        validateSubmittedFiles([{ path: 'hooks/a.js', content: `sk-${'a'.repeat(40)}` }], project),
+      /43 UTF-8 bytes.*6 bytes per file/,
+    );
+  } finally {
+    Object.assign(brainConfig.submission, original);
+  }
 });
 
 test('an overlay preserves specifications and unchanged context while recording new files, deletions and masked content', () => {

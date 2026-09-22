@@ -103,7 +103,7 @@ export function createBrainMcp(service: BrainService) {
     'brain_list_projects',
     {
       description:
-        'Check Brain availability and discover registered project IDs, allowed code paths and review scopes. Read the scope before choosing a feature.',
+        'Check Brain availability and discover project IDs, code access status, allowed code paths, specification paths, review scopes and submission limits in bytes. Projects added in the dashboard are registered automatically. Save the matching project object for the local brain-submit helper; read the scope and top-level submissionLimits before preparing a feature review.',
       inputSchema: z.object({}).strict(),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -115,6 +115,10 @@ export function createBrainMcp(service: BrainService) {
           reason: state.reason,
           projects: state.projects,
           activeRunId: state.activeRunId,
+          submissionLimits: {
+            ...brainConfig.submission,
+            maxRequestBytes: brainConfig.mcp.maxRequestBytes,
+          },
         };
       }),
   );
@@ -134,7 +138,7 @@ export function createBrainMcp(service: BrainService) {
     'brain_start_analysis',
     {
       description:
-        'Start a paid AI code review against approved project and shared specifications. Supply the full commit SHA, already available in the Brain server checkout. Uncommitted edits are excluded. Returns immediately; use brain_get_analysis to follow progress.',
+        'Start a paid AI code review against approved project and shared specifications. Supply the full commit SHA published to the registered GitHub repository or available in its legacy Brain checkout. Brain acquires GitHub revisions on demand. Local unpublished commits and uncommitted edits require brain_submit_change instead. Returns immediately; use brain_get_analysis to follow progress.',
       inputSchema: z
         .object({ projectId, commit, baseCommit: commit.optional(), feature, ...correlation })
         .strict(),
@@ -165,6 +169,7 @@ export function createBrainMcp(service: BrainService) {
           projectId: run.projectId,
           status: run.status,
           stage: run.stage,
+          requestTimeoutMs: run.requestTimeoutMs,
           pollAfterMs: brainConfig.client.pollIntervalMs,
         };
       }),
@@ -190,6 +195,7 @@ export function createBrainMcp(service: BrainService) {
           commit: run.commit,
           baseCommit: run.baseCommit,
           submission: run.submission,
+          retrieval: run.retrieval,
           codeRetrieval: run.codeRetrieval,
           correlation: run.correlation,
           status: run.status,
@@ -203,6 +209,14 @@ export function createBrainMcp(service: BrainService) {
               ? 'scoped_requirements_checked'
               : 'no_conclusion',
           requirements: complete ? run.requirements : [],
+          noConclusionReason:
+            complete && !run.requirements.length
+              ? run.events
+                  .find((event) =>
+                    event.message.startsWith('No applicable requirements extracted:'),
+                  )
+                  ?.message.slice(0, brainConfig.analysis.maxTextCharacters)
+              : undefined,
           findings: complete ? run.findings : [],
           sources: run.sources.map(({ id, title, path, kind, revision }) => ({
             id,
@@ -221,7 +235,7 @@ export function createBrainMcp(service: BrainService) {
     'brain_submit_change',
     {
       description:
-        'Review a working-copy change before commit. Send full contents of every changed file in the project allowed scope (null for deletions), relative paths and a full baseline commit SHA already available to Brain. Brain overlays the submitted code on that baseline without writing files. Specifications stay at the baseline and in approved memory. Include all relevant changes; Brain cannot inspect your local disk or detect omitted edits. Starts a paid AI analysis and returns its ID immediately.',
+        'Review local code before commit or push. Send full current contents of every allowed file differing from a published GitHub baseline (or a baseline in the legacy Brain checkout), including local commits, staged, unstaged and untracked changes; use null for deletions and relative paths. Check submissionLimits from brain_list_projects before sending; never omit changed files to fit a limit. The portable scripts/brain-submit.mjs helper prepares this payload using the matching project object from discovery, an explicit baseline and feature. Brain acquires the baseline on demand and overlays the submitted files without changing the checkout. Specifications remain approved baseline references. Brain cannot discover omitted edits or verify the local disk. Starts a paid AI analysis and returns its ID immediately.',
       inputSchema: z
         .object({
           projectId,
@@ -233,12 +247,26 @@ export function createBrainMcp(service: BrainService) {
               z
                 .object({
                   path: z.string().min(1).max(brainConfig.projects.maxGitPathCharacters),
-                  content: z.string().max(brainConfig.codeRetrieval.maxSubmissionBytes).nullable(),
+                  content: z
+                    .string()
+                    .max(brainConfig.submission.maxFileBytes, {
+                      message: `Submitted file exceeds ${brainConfig.submission.maxFileBytes} UTF-8 bytes.`,
+                    })
+                    .refine(
+                      (content) =>
+                        Buffer.byteLength(content, 'utf8') <= brainConfig.submission.maxFileBytes,
+                      {
+                        message: `Submitted file exceeds ${brainConfig.submission.maxFileBytes} UTF-8 bytes.`,
+                      },
+                    )
+                    .nullable(),
                 })
                 .strict(),
             )
             .min(1)
-            .max(brainConfig.analysis.maxSources),
+            .max(brainConfig.submission.maxFiles, {
+              message: `Submission exceeds ${brainConfig.submission.maxFiles} files.`,
+            }),
         })
         .strict(),
       annotations: {
@@ -269,6 +297,7 @@ export function createBrainMcp(service: BrainService) {
           baselineCommit: input.baselineCommit,
           captureMode: 'agent-submitted',
           status: run.status,
+          requestTimeoutMs: run.requestTimeoutMs,
           pollAfterMs: brainConfig.client.pollIntervalMs,
         };
       }),

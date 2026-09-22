@@ -34,6 +34,10 @@ For both clients, prefer the [repeatable developer setup](../fleet/SETUP.md):
 `npm run agents:setup -- --apply`, select repositories, then start
 `npm run agents:relay`. This already installs the hooks for both clients: do not
 also merge manual snippets, which would install duplicate handlers.
+Issue a workstation token in **Accounts** and provide it as `HARMONIE_TOKEN` to
+the environment launching the clients and relay, even for a local dashboard.
+The relay uses it for upstream authentication; hooks send their metadata to the
+loopback relay without embedding that credential in their payloads.
 
 For a manually provisioned relay, install the Claude hooks as follows:
 

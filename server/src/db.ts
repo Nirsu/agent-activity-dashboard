@@ -7,6 +7,7 @@ import type { Pool, PoolClient } from 'pg';
 import type {
   AgentEvent,
   AgentProvider,
+  ActivityTeam,
   CumulativeSnapshot,
   UsageAliasUpdate,
   UsageDelta,
@@ -237,6 +238,7 @@ export class History {
       model: event.model,
       agent: event.agent,
       teamId: event.teamId,
+      teams: event.teams,
       repo: event.repo,
       branch: event.branch,
       ticket: event.ticket,
@@ -506,7 +508,90 @@ export class History {
     return rows.map((row) => document(row.data));
   }
 
-  async trends(requestedDays: number): Promise<unknown> {
+  private async teamTotals(
+    since: string,
+    until: string,
+    legacyTeamAliases: ReadonlyMap<string, ActivityTeam>,
+  ) {
+    // Expand memberships only for per-team views. Global totals read the original ledger once.
+    const memberships = this.pool
+      ? `CASE WHEN jsonb_typeof(data->'teams') = 'array' THEN
+          CASE WHEN jsonb_array_length(data->'teams') > 0 THEN data->'teams'
+            ELSE jsonb_build_array(jsonb_build_object('id','unassigned','name','No team')) END
+          ELSE jsonb_build_array(jsonb_build_object('id',COALESCE(team_id,'unassigned'),
+            'name',COALESCE(team_id,'No team'))) END`
+      : `CASE WHEN json_type(data,'$.teams') = 'array' THEN
+          CASE WHEN json_array_length(data,'$.teams') > 0 THEN json_extract(data,'$.teams')
+            ELSE json_array(json_object('id','unassigned','name','No team')) END
+          ELSE json_array(json_object('id',COALESCE(team_id,'unassigned'),
+            'name',COALESCE(team_id,'No team'))) END`;
+    const expanded = this.pool
+      ? `jsonb_array_elements(memberships) AS membership(value)`
+      : `json_each(memberships) AS membership`;
+    const id = this.pool ? `membership.value->>'id'` : `json_extract(membership.value,'$.id')`;
+    const name = this.pool
+      ? `membership.value->>'name'`
+      : `json_extract(membership.value,'$.name')`;
+    const hasMemberships = this.pool
+      ? `jsonb_typeof(data->'teams') = 'array'`
+      : `json_type(data,'$.teams') = 'array'`;
+    const rows = await this.rows<
+      TotalsRow & { team_id: string; team_name: string; last_seen: number; legacy_team: number }
+    >(
+      `WITH scoped AS (
+        SELECT *, ${memberships} AS memberships,
+          CASE WHEN ${hasMemberships} THEN 0 WHEN team_id IS NOT NULL THEN 1 ELSE 0 END AS legacy_team
+        FROM aad_history_usage WHERE day>=? AND day<=?
+      ) SELECT ${id} AS team_id, ${name} AS team_name, legacy_team, MAX(ts) AS last_seen, ${TOTALS_SQL}
+        FROM scoped CROSS JOIN ${expanded} GROUP BY ${id}, ${name}, legacy_team`,
+      [since, until],
+    );
+    // A rename retains its stable ID; use the most recently observed display name.
+    const teams = new Map<
+      string,
+      { teamId: string; teamName: string; lastSeen: number } & HistoryTotals
+    >();
+    for (const row of rows) {
+      const alias = row.legacy_team
+        ? legacyTeamAliases.get(row.team_id.trim().toLowerCase())
+        : undefined;
+      const teamId = alias?.id ?? row.team_id;
+      const teamName = alias?.name ?? row.team_name;
+      const current = teams.get(teamId);
+      const next = totals(row);
+      if (!current) {
+        teams.set(teamId, {
+          teamId,
+          teamName,
+          lastSeen: Number(row.last_seen),
+          ...next,
+        });
+        continue;
+      }
+      if (Number(row.last_seen) >= current.lastSeen) {
+        current.teamName = teamName;
+        current.lastSeen = Number(row.last_seen);
+      }
+      for (const key of Object.keys(next) as Array<keyof HistoryTotals>) {
+        if (key === 'costKnown' || key === 'tokensKnown') {
+          current[key] ||= next[key];
+        } else {
+          current[key] += next[key];
+        }
+      }
+    }
+    return [...teams.values()]
+      .sort((left, right) => right.costUsd - left.costUsd)
+      .map(({ lastSeen: _lastSeen, ...team }) => ({
+        ...team,
+        tokens: team.tokensIn + team.tokensOut,
+      }));
+  }
+
+  async trends(
+    requestedDays: number,
+    legacyTeamAliases: ReadonlyMap<string, ActivityTeam> = new Map(),
+  ): Promise<unknown> {
     if (!this.enabled) {
       return { enabled: false, backend: this.backend, days: [], byStream: [] };
     }
@@ -528,10 +613,7 @@ export class History {
         COUNT(DISTINCT session_id) AS sessions FROM aad_history_events WHERE day>=? AND day<=? GROUP BY day`,
         [since, until],
       ),
-      this.rows<TotalsRow & { team_id: string | null }>(
-        `SELECT team_id,${TOTALS_SQL} FROM aad_history_usage WHERE day>=? AND day<=? GROUP BY team_id ORDER BY cost DESC`,
-        [since, until],
-      ),
+      this.teamTotals(since, until, legacyTeamAliases),
       this.loadPromptEvents(new Date(`${since}T00:00:00`).getTime() - PROMPT_PAIR_WINDOW_MS),
     ]);
     const mapped = new Map(
@@ -559,11 +641,7 @@ export class History {
       enabled: true,
       backend: this.backend,
       days: [...mapped.values()],
-      byStream: streams.map((row) => ({
-        teamId: row.team_id ?? 'unassigned',
-        ...totals(row),
-        tokens: Number(row.input ?? 0) + Number(row.output ?? 0),
-      })),
+      byStream: streams,
     };
   }
 

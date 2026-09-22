@@ -9,6 +9,9 @@ overlay. The initial code contains only bounded excerpts, not the whole reposito
 repository.files lists allowed paths; catalogTruncated means more paths exist.
 Use requests to obtain missing evidence before reaching a conclusion:
 
+Return at most repository.maxRequestsPerRound requests in one response. Prioritize
+the passages needed next; additional passages can be requested in later rounds.
+
 - {"action":"search","query":"literal text"} searches the allowed snapshot.
 - {"action":"read","path":"src/file.ts","startLine":1,"endLine":120}
   reads an inclusive range, within repository.maxLinesPerRead.

@@ -12,5 +12,13 @@ export interface AuthorizedRepository {
   remote: string;
   enabled: boolean;
   brainProjectId?: string;
+  brainScope?: string;
+  brainCodePaths?: string[];
   createdAt: string;
 }
+
+export type BrainProjectStatus = {
+  state: 'ready' | 'needs_access' | 'needs_references' | 'unverified' | 'disabled' | 'unsupported';
+  message: string;
+  checkedAt?: string;
+};

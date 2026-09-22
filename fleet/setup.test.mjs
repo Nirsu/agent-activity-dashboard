@@ -6,10 +6,14 @@ import test from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { setup, validateUrl, codexTelemetry } from './setup.mjs';
 
-test('individual tokens configure both clients without storing secrets and migrate existing Brain entries idempotently', async (t) => {
+test('setup always configures workstation tokens for both clients and updates Brain entries idempotently', async (t) => {
   const paths = await fixture(t);
   await setup({ ...paths, apply: true });
-  await setup({ ...paths, url: 'https://agents.example.test', individualToken: true, apply: true });
+  assert.match(
+    await readFile(join(paths.codexHome, 'config.toml'), 'utf8'),
+    /bearer_token_env_var = "HARMONIE_TOKEN"/,
+  );
+  await setup({ ...paths, url: 'https://agents.example.test', apply: true });
   const codex = await readFile(join(paths.codexHome, 'config.toml'), 'utf8');
   assert.match(codex, /bearer_token_env_var = "HARMONIE_TOKEN"/);
   assert.match(codex, /https:\/\/agents.example.test\/api\/brain\/mcp/);
@@ -23,10 +27,43 @@ test('individual tokens configure both clients without storing secrets and migra
   const rerun = await setup({
     ...paths,
     url: 'https://agents.example.test',
-    individualToken: true,
     apply: true,
   });
   assert.equal(rerun.changedFiles.length, 0);
+});
+
+test('setup replaces an existing Brain credential reference without duplicating TOML keys', async (t) => {
+  const paths = await fixture(t);
+  await writeFile(
+    join(paths.codexHome, 'config.toml'),
+    '[mcp_servers.harmony-brain]\nenabled = true\nurl = "https://old.example.test/api/brain/mcp"\nbearer_token_env_var = "OBSOLETE_AGENT_CREDENTIAL"',
+  );
+  await writeFile(
+    join(paths.home, '.claude.json'),
+    JSON.stringify({
+      mcpServers: {
+        'harmony-brain': {
+          type: 'http',
+          url: 'https://old.example.test/api/brain/mcp',
+          headers: { Authorization: 'obsolete-value' },
+        },
+        other: { type: 'http', url: 'https://other.example.test' },
+      },
+    }),
+  );
+  await setup({ ...paths, apply: true });
+  const codex = await readFile(join(paths.codexHome, 'config.toml'), 'utf8');
+  assert.equal(codex.match(/^url = /gm).length, 1);
+  assert.equal(codex.match(/^bearer_token_env_var = /gm).length, 1);
+  assert.match(codex, /enabled = true/);
+  assert.doesNotMatch(codex, /OBSOLETE_AGENT_CREDENTIAL|old.example.test/);
+  const claude = JSON.parse(await readFile(join(paths.home, '.claude.json'), 'utf8'));
+  assert.equal(
+    claude.mcpServers['harmony-brain'].headers.Authorization,
+    'Bearer ${HARMONIE_TOKEN}',
+  );
+  assert.equal(claude.mcpServers.other.url, 'https://other.example.test');
+  assert.deepEqual((await setup({ ...paths, apply: true })).changedFiles, []);
 });
 
 test('installed bridges preserve parent and child identities without forwarding content', async (t) => {
@@ -211,7 +248,6 @@ test('setup validates destinations and Windows commands quote absolute paths wit
   const paths = await fixture(t);
   await setup({
     ...paths,
-    clients: ['codex'],
     platform: 'win32',
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
     apply: true,
@@ -219,9 +255,47 @@ test('setup validates destinations and Windows commands quote absolute paths wit
   const hooks = JSON.parse(await readFile(join(paths.codexHome, 'hooks.json'), 'utf8')).hooks;
   assert.match(
     hooks.Stop[0].hooks[0].command,
-    /^"C:\/Program Files\/nodejs\/node.exe" ".*codex-hook.mjs"$/,
+    /^& "C:\/Program Files\/nodejs\/node.exe" ".*codex-hook.mjs"$/,
+  );
+  const claude = JSON.parse(await readFile(join(paths.claudeHome, 'settings.json'), 'utf8'));
+  assert.match(
+    claude.hooks.Stop[0].hooks[0].command,
+    /^"C:\/Program Files\/nodejs\/node.exe" ".*claude-hook.mjs"$/,
   );
 });
+
+test(
+  'Windows Codex hooks execute through PowerShell with spaced paths',
+  {
+    skip: process.platform !== 'win32',
+  },
+  async (t) => {
+    const paths = await fixture(t);
+    await setup({ ...paths, clients: ['codex'], apply: true });
+    const settings = JSON.parse(await readFile(join(paths.codexHome, 'hooks.json'), 'utf8'));
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    const result = spawnSync('pwsh.exe', ['-NoProfile', '-Command', command], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10_000,
+      env: { ...process.env, AAD_DRY_RUN: '1' },
+      input: JSON.stringify({
+        hook_event_name: 'SessionStart',
+        session_id: 'powershell-session',
+        cwd: paths.home,
+        prompt: 'SECRET',
+      }),
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /SECRET/);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.provider, 'codex');
+    assert.equal(payload.event, 'session_start');
+    assert.equal(payload.session_id, 'powershell-session');
+    assert.equal(payload.cwd, paths.home);
+  },
+);
 
 test('setup opts in selected repositories, keeps them on rerun and rejects invalid selections before writing', async (t) => {
   const paths = await fixture(t);

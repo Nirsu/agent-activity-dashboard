@@ -8,6 +8,7 @@ import {
   filterGraph,
   graphViewport,
   layoutGraph,
+  sourcePreview,
 } from '../ui/src/components/brain/graph';
 import type { MemoryGraph } from '../ui/src/components/brain/graph';
 
@@ -25,6 +26,15 @@ const graph: MemoryGraph = {
     { id: 'bc', source: 'b', target: 'c', label: 'checked by' },
   ],
 };
+
+test('Notion previews hide structural markup without changing literal code or comparisons', () => {
+  const source =
+    '<callout icon="🧱">Technical scope: <272K tokens.</callout> <table header-row="true"><tr><td>Frontend</td><td>React</td></tr><tr';
+  assert.equal(sourcePreview(source), 'Technical scope: <272K tokens. Frontend React');
+  assert.match(source, /<callout/);
+  assert.equal(sourcePreview('const tag = "<table>";'), 'const tag = "<table>";');
+  assert.equal(sourcePreview('Input < 100 and output > 0'), 'Input < 100 and output > 0');
+});
 
 test('search and type filters keep only links whose endpoints are both visible', () => {
   const filtered = filterGraph(graph, 'LOGIN', ['source', 'requirement']);

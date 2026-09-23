@@ -372,7 +372,20 @@ function AnalysisCoverage({ analysis }: { analysis: Analysis }) {
       <dl>
         <div>
           <dt>Code examined</dt>
-          <dd>{code.map((source) => source.title).join(', ') || 'No code captured'}</dd>
+          <dd>
+            {code.length > 3 ? (
+              <details className="brain-coverage-files">
+                <summary>{code.length} captured files</summary>
+                <ul>
+                  {code.map((source) => (
+                    <li key={source.id}>{source.title}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : (
+              code.map((source) => source.title).join(', ') || 'No code captured'
+            )}
+          </dd>
         </div>
         <div>
           <dt>Requirements taken from</dt>

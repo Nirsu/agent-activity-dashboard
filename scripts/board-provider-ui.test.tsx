@@ -5,6 +5,49 @@ import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { act, create } from 'react-test-renderer';
 import type { Aggregate, SessionState } from '../ui/src/types';
+import {
+  agentMapLayout,
+  MAP_NODE_WIDTH,
+  MAP_NODE_HEIGHT,
+  MAP_HEADING_HEIGHT,
+} from '../ui/src/components/agentMapLayout';
+
+test('map keeps all node and heading bounds separate across mobile, desktop and dense teams', () => {
+  for (const width of [200, 288, 312, 360, 620, 720, 1100, 1600]) {
+    for (const counts of [[1, 1, 1, 1, 1, 1], [12], [1, 9, 2, 18, 1, 5], Array(30).fill(3)]) {
+      const layout = agentMapLayout(counts, width);
+      const bounds = layout.clusters.flatMap((cluster) => [
+        {
+          x: cluster.cx - cluster.headingWidth / 2,
+          y: cluster.headingY,
+          w: cluster.headingWidth,
+          h: MAP_HEADING_HEIGHT,
+        },
+        ...cluster.nodes.map((node) => ({
+          x: node.x - layout.nodeWidth / 2,
+          y: node.y - MAP_NODE_HEIGHT / 2,
+          w: layout.nodeWidth,
+          h: MAP_NODE_HEIGHT,
+        })),
+      ]);
+      assert.ok(layout.nodeWidth <= MAP_NODE_WIDTH);
+      assert.equal(
+        layout.clusters.flatMap((cluster) => cluster.nodes).length,
+        counts.reduce((a, b) => a + b, 0),
+      );
+      bounds.forEach((a, index) => {
+        assert.ok(
+          a.x >= 0 && a.y >= 0 && a.x + a.w <= width && a.y + a.h <= layout.height,
+          `Outside canvas at ${width}px: ${JSON.stringify(a)}`,
+        );
+        for (const b of bounds.slice(index + 1)) {
+          const overlaps = a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+          assert.equal(overlaps, false, `Overlap at ${width}px: ${JSON.stringify({ a, b })}`);
+        }
+      });
+    }
+  }
+});
 
 test('Board filters sessions, summaries and live updates by AI provider', async (t) => {
   let renderer!: ReturnType<typeof create>;
@@ -284,8 +327,11 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
   assert.equal(renderer.root.findAllByProps({ 'aria-label': 'Filter by AI provider' }).length, 0);
   assert.equal(renderer.root.findAllByType(Directory).length, 0);
   assert.equal(renderer.root.findAllByType(SessionDetail).length, 0);
-  assert.equal(cost(), 7, 'global history must not show a provider-filtered KPI');
-  assert.equal(renderer.root.findByType(AggregateBar).props.provider, undefined);
+  assert.equal(
+    renderer.root.findAllByType(AggregateBar).length,
+    0,
+    'historical trends do not mix in live KPIs',
+  );
   assert.match(JSON.stringify(renderer.toJSON()), /all providers and streams/);
   await navigate('Board');
   assert.equal(providerButton('Codex').props['aria-pressed'], true);
@@ -362,7 +408,7 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
       await navigate('Map');
       assert.equal(renderer.root.findByType(AgentMap).findAllByType('button').length, 1);
       assert.match(
-        renderer.root.findByProps({ className: 'map-cluster-label' }).props.children.join(''),
+        renderer.root.findByProps({ className: 'map-cluster-label' }).props.children,
         /Beta renamed/,
       );
       await select(null);

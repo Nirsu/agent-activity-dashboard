@@ -9,36 +9,33 @@ import { MetricLegend } from './components/MetricLegend';
 import { Trends } from './components/Trends';
 import { Brain } from './components/Brain';
 import { BrainActivityBoard } from './components/BrainActivityBoard';
-import { Accounts } from './components/Accounts';
-import { Projects } from './components/Projects';
+import { Settings } from './components/Settings';
+import { canonicalHash, settingsSectionFromHash, viewFromHash, type View } from './navigation';
 import type { AgentProvider } from './types';
 import { groupSessions } from '../../server/src/session-hierarchy';
 import { matchesTeam, selectedTeamLabel } from './teams';
 
-type View = 'board' | 'map' | 'trends' | 'brain' | 'accounts' | 'projects';
 type ProviderFilter = 'all' | AgentProvider;
-const viewFromHash = (): View => {
-  const value = location.hash.slice(1).split('/')[0];
-  return value === 'brain' ||
-    value === 'map' ||
-    value === 'trends' ||
-    value === 'accounts' ||
-    value === 'projects'
-    ? value
-    : 'board';
-};
 
 export default function App() {
   const { connected, sessions, aggregate, providerAggregates, events } = useDashboard();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [view, setView] = useState<View>(viewFromHash);
+  const [hash, setHash] = useState(() => canonicalHash(location.hash));
+  const view = viewFromHash(hash);
   useEffect(() => {
-    const onHash = () => setView(viewFromHash());
+    const onHash = () => {
+      const nextHash = canonicalHash(location.hash);
+      if (nextHash !== location.hash) {
+        history.replaceState(history.state, '', nextHash);
+      }
+      setHash(nextHash);
+    };
+    onHash();
     addEventListener('hashchange', onHash);
     return () => removeEventListener('hashchange', onHash);
   }, []);
   const navigate = (value: View) => {
-    setView(value);
+    setHash(canonicalHash(`#${value}`));
     location.hash = value;
   };
   const [provider, setProvider] = useState<ProviderFilter>('all');
@@ -99,33 +96,44 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-right">
-          <div className="viewswitch">
-            <button className={view === 'brain' ? 'on' : ''} onClick={() => navigate('brain')}>
+          <nav className="viewswitch" aria-label="Main navigation">
+            <button
+              className={view === 'brain' ? 'on' : ''}
+              aria-current={view === 'brain' ? 'page' : undefined}
+              onClick={() => navigate('brain')}
+            >
               Harmony Brain
             </button>
-            <button className={view === 'board' ? 'on' : ''} onClick={() => navigate('board')}>
+            <button
+              className={view === 'board' ? 'on' : ''}
+              aria-current={view === 'board' ? 'page' : undefined}
+              onClick={() => navigate('board')}
+            >
               Board
             </button>
-            <button className={view === 'map' ? 'on' : ''} onClick={() => navigate('map')}>
+            <button
+              className={view === 'map' ? 'on' : ''}
+              aria-current={view === 'map' ? 'page' : undefined}
+              onClick={() => navigate('map')}
+            >
               Map
             </button>
-            <button className={view === 'trends' ? 'on' : ''} onClick={() => navigate('trends')}>
+            <button
+              className={view === 'trends' ? 'on' : ''}
+              aria-current={view === 'trends' ? 'page' : undefined}
+              onClick={() => navigate('trends')}
+            >
               Trends
             </button>
             <button
-              className={view === 'accounts' ? 'on' : ''}
-              onClick={() => navigate('accounts')}
+              className={view === 'settings' ? 'on' : ''}
+              aria-current={view === 'settings' ? 'page' : undefined}
+              onClick={() => navigate('settings')}
             >
-              Accounts
+              Settings
             </button>
-            <button
-              className={view === 'projects' ? 'on' : ''}
-              onClick={() => navigate('projects')}
-            >
-              Projects
-            </button>
-          </div>
-          {view !== 'brain' && (
+          </nav>
+          {(view === 'board' || view === 'map') && (
             <div className={`conn ${connected ? 'on' : 'off'}`}>
               <span className="dot" />
               {connected ? 'Live' : 'Reconnecting…'}
@@ -134,18 +142,28 @@ export default function App() {
         </div>
       </header>
 
-      {view === 'projects' ? (
-        <Projects />
-      ) : view === 'accounts' ? (
-        <Accounts />
+      {view === 'settings' ? (
+        <Settings section={settingsSectionFromHash(hash)} />
       ) : view === 'brain' ? (
         <Brain />
       ) : (
         <>
-          <AggregateBar
-            agg={filteredAggregate}
-            provider={activeProvider === 'all' ? undefined : activeProvider}
-          />
+          {view !== 'trends' && (
+            <>
+              <div className="activity-page-heading">
+                <h1>{view === 'map' ? 'Activity map' : 'Activity board'}</h1>
+                <p>
+                  {view === 'map'
+                    ? 'Explore sessions by team. Select an agent to open its activity.'
+                    : 'Follow live tasks, agent activity and Brain analyses.'}
+                </p>
+              </div>
+              <AggregateBar
+                agg={filteredAggregate}
+                provider={activeProvider === 'all' ? undefined : activeProvider}
+              />
+            </>
+          )}
 
           <div className={`shell${view === 'trends' ? ' shell-wide' : ''}`}>
             {view !== 'trends' && (
@@ -202,6 +220,11 @@ export default function App() {
                   sessions={directorySessions.filter(matches)}
                   selectedTeam={selection.stream}
                   onSelect={setSelectedId}
+                  hasFilters={hasFilters}
+                  onClear={() => {
+                    setProvider('all');
+                    setSelection({ stream: null, agent: null });
+                  }}
                 />
               ) : (
                 <LiveSessions

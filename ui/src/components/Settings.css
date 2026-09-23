@@ -1,0 +1,119 @@
+.workspace-settings {
+  color-scheme: dark;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.settings-heading {
+  margin-bottom: 32px;
+}
+.settings-heading > span {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+.settings-heading h1 {
+  margin: 8px 0 10px;
+  font-size: 32px;
+  letter-spacing: -0.035em;
+}
+.settings-heading p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+}
+.settings-navigation {
+  display: grid;
+  gap: 6px;
+  position: sticky;
+  top: 24px;
+}
+.settings-navigation a {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  text-decoration: none;
+  color: var(--text-dim);
+}
+.settings-navigation a:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.settings-navigation a[aria-current='page'] {
+  background: var(--accent-soft);
+  border-color: #739bff40;
+  color: var(--text);
+}
+.settings-navigation strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-navigation span {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.settings-navigation a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.settings-content {
+  min-width: 0;
+  padding-left: 28px;
+  border-left: 1px solid var(--border);
+}
+.settings-content > .access-page,
+.settings-content > .brain-settings {
+  margin: 0;
+  padding: 0;
+  max-width: none;
+}
+.settings-content .access-page-title,
+.settings-content .brain-live-header > div > h2 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+.settings-content .access-heading,
+.settings-content .brain-live-header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+@media (max-width: 1050px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .settings-navigation {
+    position: static;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .settings-content {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+@media (max-width: 560px) {
+  .settings-heading {
+    margin-bottom: 22px;
+  }
+  .settings-navigation a {
+    padding: 12px 8px;
+    text-align: center;
+  }
+  .settings-navigation strong {
+    font-size: 12px;
+  }
+  .settings-navigation span {
+    display: none;
+  }
+}

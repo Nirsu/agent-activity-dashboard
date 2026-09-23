@@ -14,12 +14,17 @@ import { registerMemoryGraph } from './brain/graph.js';
 import { registerBrainMcp } from './brain/mcp.js';
 import type { BrainAgentsOptions } from './brain/analysis/types.js';
 import type { ProjectRegistry } from './brain/project-registry.js';
+import type { PricingService } from './brain/pricing/service.js';
+import { registerPricingRoutes } from './brain/pricing/routes.js';
 
 export { makeSource, type Source } from './brain/sources.js';
 
 export async function registerBrain(
   app: FastifyInstance,
-  options: Pick<BrainAgentsOptions, 'onActivity'> & { registry?: ProjectRegistry } = {},
+  options: Pick<BrainAgentsOptions, 'onActivity'> & {
+    registry?: ProjectRegistry;
+    pricing?: PricingService;
+  } = {},
 ) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const dbPath = process.env.BRAIN_DB_PATH ?? resolve(config.dataDir, 'brain.db');
@@ -63,6 +68,7 @@ export async function registerBrain(
   await notion.init();
   await memory.init();
   app.addHook('onRequest', requireBrainAccess);
+  if (options.pricing) registerPricingRoutes(app, options.pricing);
   await registerNotionRoutes(app, notion, requireBrainAdmin);
   registerMemoryRoutes(app, memory, requireBrainAdmin);
   await registerMemoryWebhooks(app, memory);

@@ -40,6 +40,42 @@ function checkpoint(ts: number): CumulativeSnapshot {
   };
 }
 
+test('observed models include distinct event and usage models, including usage-only agents', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pricing-history-'));
+  const target = new History({
+    backend: 'sqlite',
+    databasePath: join(directory, 'history.db'),
+    pruneOnInit: false,
+  });
+  t.after(async () => {
+    await target.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await target.init();
+  await target.recordEvent({
+    id: 'astra-event',
+    ts: 1000,
+    kind: 'api_request',
+    provider: 'codex',
+    sessionId: 'pricing-history',
+    model: 'gpt-6-astra',
+  });
+  await target.recordUsage(usage({ model: 'gpt-6-astra', ts: 2000 }));
+  await target.recordUsage(usage({ model: 'claude-sonnet-4-6', provider: 'claude', ts: 3000 }));
+  await target.recordUsage(
+    usage({ model: 'gpt-5.6-luna', provider: 'brain', source: 'brain', ts: 4000 }),
+  );
+  await target.recordUsage(usage({ ts: 5000 }));
+  assert.deepEqual(await target.loadObservedModels(500), [
+    { model: 'gpt-5.6-luna', provider: 'brain' },
+    { model: 'claude-sonnet-4-6', provider: 'claude' },
+    { model: 'gpt-6-astra', provider: 'codex' },
+  ]);
+  assert.deepEqual(await target.loadObservedModels(1), [
+    { model: 'gpt-5.6-luna', provider: 'brain' },
+  ]);
+});
+
 async function verifyRequestCompletion(target: History): Promise<void> {
   const baseline = await target.todayTotals();
   let store = new Store();

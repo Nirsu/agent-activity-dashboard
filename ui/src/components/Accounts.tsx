@@ -44,7 +44,7 @@ export function Accounts() {
     addButton.current?.focus();
   };
   return (
-    <main className="access-page">
+    <section className="access-page" aria-label="Accounts">
       <AccessHeader
         title="Accounts"
         description="Manage your developers and the workstations they connect."
@@ -273,6 +273,6 @@ export function Accounts() {
           </details>
         </>
       )}
-    </main>
+    </section>
   );
 }

@@ -1,4 +1,24 @@
 {
+  "pricing": {
+    "maxModels": 500,
+    "maxModelCharacters": 160,
+    "maxUrlCharacters": 2000,
+    "maxSourceBytes": 2000000,
+    "maxSourceCharacters": 120000,
+    "maxQuoteCharacters": 2000,
+    "maxEvidenceExcerpts": 6,
+    "sourceTimeoutMs": 30000,
+    "agentTimeoutMs": 180000,
+    "pollIntervalMs": 2000,
+    "maxRedirects": 4,
+    "automaticIntervalMs": 5000,
+    "automaticRetryDelayMs": 3600000,
+    "automaticMaxAttempts": 3,
+    "officialSources": {
+      "openai": "https://developers.openai.com/api/docs/pricing",
+      "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing"
+    }
+  },
   "access": {
     "maxTokenDays": 365,
     "defaultTokenDays": 90,

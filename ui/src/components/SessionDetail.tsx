@@ -51,6 +51,10 @@ export function SessionDetail({
   const drawer = useRef<HTMLElement>(null);
   useEffect(() => {
     const previous = typeof document !== 'undefined' ? document.activeElement : null;
+    const previousOverflow = typeof document !== 'undefined' ? document.body.style.overflow : '';
+    if (typeof document !== 'undefined') {
+      document.body.style.overflow = 'hidden';
+    }
     drawer.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -74,7 +78,11 @@ export function SessionDetail({
     addEventListener('keydown', onKey);
     return () => {
       removeEventListener('keydown', onKey);
-      if (typeof HTMLElement !== 'undefined' && previous instanceof HTMLElement) previous.focus();
+      if (typeof document !== 'undefined') {
+        document.body.style.overflow = previousOverflow;
+      }
+      if (typeof HTMLElement !== 'undefined' && previous instanceof HTMLElement)
+        previous.focus({ preventScroll: true });
     };
   }, []);
   const timeline = useMemo(() => {

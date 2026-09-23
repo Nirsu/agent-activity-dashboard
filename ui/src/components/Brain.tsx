@@ -6,13 +6,11 @@ export type { BrainSource } from './brain/types';
 const BrainMemory = lazy(() => import('./BrainMemory'));
 const BrainAgents = lazy(() => import('./BrainAgents'));
 const BrainGraph = lazy(() => import('./BrainGraph'));
-const BrainSettings = lazy(() => import('./BrainSettings'));
 
 const tabs = [
   ['memory', 'Memory'],
   ['graph', 'Memory graph'],
   ['agents', 'Project analyses'],
-  ['settings', 'Settings'],
 ] as const;
 
 function currentTab() {
@@ -48,7 +46,6 @@ export function Brain() {
         {tab === 'memory' && <BrainMemory />}
         {tab === 'graph' && <BrainGraph />}
         {tab === 'agents' && <BrainAgents />}
-        {tab === 'settings' && <BrainSettings />}
       </Suspense>
       <footer className="brain-footer">
         <span>HARMONY BRAIN</span>

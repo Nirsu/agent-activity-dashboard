@@ -28,9 +28,6 @@ export function RepositoryBrainStatus({ repository }: { repository: Repository }
     <div className="access-brain-status">
       <AccessStatus tone={tone}>{status.label}</AccessStatus>
       <p>{status.message}</p>
-      {status.state === 'ready' && (
-        <small>Code access and references verified at the last check.</small>
-      )}
       {status.state === 'needs_references' && (
         <a href="#brain/memory">Manage approved references →</a>
       )}

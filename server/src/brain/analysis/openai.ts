@@ -71,7 +71,7 @@ export class OpenAIClient {
   }
 
   async call(
-    role: AgentRole,
+    role: AgentRole | 'pricing',
     prompt: string,
     input: unknown,
     schema: Record<string, unknown>,

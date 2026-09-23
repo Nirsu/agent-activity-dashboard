@@ -26,6 +26,9 @@ import { normalizeRepositoryRemote } from './access/repositories.js';
 import type { FastifyRequest } from 'fastify';
 import type { ActivitySubtype, AgentEvent, UsageDelta } from './types.js';
 import type { BrainActivity } from './brain/analysis/types.js';
+import { PricingService } from './brain/pricing/service.js';
+import { brainConfig } from './brain/config.js';
+import { estimateModelCost } from './model-cost.js';
 
 const LEDGER_PATH = resolve(config.dataDir, 'cost-ledger.jsonl');
 
@@ -144,6 +147,25 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   const store = new Store();
   const access = new AccessStore(resolve(config.dataDir, 'access.db'));
+  const pricing = new PricingService(access.storage, {
+    onUsage: async (jobId, model, result) => {
+      const usage: UsageDelta = {
+        usageId: `pricing:${jobId}:${model}`,
+        source: 'brain',
+        provider: 'brain',
+        ts: Date.now(),
+        runId: jobId,
+        model: result.model ?? process.env.BRAIN_MODEL,
+        dUsd: result.usageKnown ? estimateModelCost(result) : null,
+        dTokensIn: result.usageKnown ? result.inputTokens : null,
+        dTokensOut: result.usageKnown ? result.outputTokens : null,
+        costStatus:
+          result.usageKnown && estimateModelCost(result) !== null ? 'estimated' : 'unknown',
+      };
+      writes.enqueue(() => persistUsage(usage));
+      await writes.flush();
+    },
+  });
   app.decorateRequest('accessPrincipal', null);
   app.decorateRequest('authorizedRepository', null);
   function ingestEvent(event: AgentEvent, request: FastifyRequest) {
@@ -170,6 +192,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.log.error('Activity persistence failed; ingestion requires recovery.'),
   );
   async function persistUsage(usage: UsageDelta): Promise<void> {
+    pricing.observeModels([usage]);
     const inserted = await history.recordUsage(usage);
     if (inserted && usage.source === 'brain') {
       store.ingestExternalUsage(usage);
@@ -192,6 +215,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     store.close();
     codexMetadata.close();
     await writes.flush().catch(() => undefined);
+    await pricing.close();
     await access.close();
     if (historyClaimed) {
       await releaseHistory();
@@ -203,6 +227,15 @@ export async function buildApp(): Promise<FastifyInstance> {
     historyClaimed = true;
     await acquireHistory();
     await access.init();
+    await pricing.init();
+    pricing.observeModels(await history.loadObservedModels(brainConfig.pricing.maxModels));
+    pricing.observeModels([{ model: process.env.BRAIN_MODEL, provider: 'brain' }]);
+    store.on('event', (event) => pricing.observeModels([event]));
+    store.on('usage', (usage) => pricing.observeModels([usage]));
+    store.on('usage_aliases', (update) =>
+      pricing.observeModels([{ model: update.measurements?.model, provider: 'codex' }]),
+    );
+    app.addHook('onReady', async () => pricing.startAutomatic());
     if (history.enabled) {
       store.restoreCumulative(await history.loadCumulative());
       const usageIdentities = await history.loadUsageIdentityMap();
@@ -503,6 +536,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     });
     await registerBrain(app, {
       registry,
+      pricing,
       onActivity: async (event: BrainActivity) => {
         if (
           event.kind === 'brain_model_call' &&

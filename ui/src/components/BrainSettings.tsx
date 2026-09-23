@@ -5,6 +5,8 @@ import { formatDate } from './brain/presentation';
 import { notionPageId } from './brain/notionPageId';
 import { brainConfig } from './brain/config';
 import './BrainMemory.css';
+import { BrainPricing } from './brain/BrainPricing';
+import './brain/BrainPricing.css';
 
 type ConnectionAction = 'connect' | 'disconnect' | 'test' | 'cognee';
 let pendingAuthorization: { url: string; expiresAt: number } | undefined;
@@ -108,9 +110,8 @@ export default function BrainSettings() {
     <section className="brain-memory brain-settings" aria-labelledby="brain-settings-title">
       <header className="brain-live-header">
         <div>
-          <div className="brain-eyebrow">WORKSPACE</div>
-          <h1 id="brain-settings-title">Settings</h1>
-          <p>Connect your references and manage Brain’s memory service.</p>
+          <h2 id="brain-settings-title">Harmony Brain</h2>
+          <p>Manage model pricing, reference connections and Brain’s memory service.</p>
         </div>
         <button className="brain-button" onClick={showAdminAccess}>
           Administrator access{adminAccess ? ' · set' : ''}
@@ -138,6 +139,7 @@ export default function BrainSettings() {
           {notice}
         </p>
       )}
+      <BrainPricing onAdminRequired={showAdminAccess} />
       {!memory.state ? (
         <div className="brain-memory-empty" role="status">
           <h2>{memory.connectionError ? 'Settings are unavailable' : 'Loading connections…'}</h2>

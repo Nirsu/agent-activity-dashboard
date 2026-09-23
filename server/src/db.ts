@@ -364,6 +364,25 @@ export class History {
     return [...(await this.loadUsageIdentityMap()).keys()];
   }
 
+  async loadObservedModels(limit: number): Promise<Array<{ model: string; provider: string }>> {
+    if (!this.enabled) {
+      return [];
+    }
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error('The model discovery limit must be a positive integer.');
+    }
+    const model = this.pool ? "data->>'model'" : "json_extract(data, '$.model')";
+    return this.rows<{ model: string; provider: string }>(
+      `SELECT model,provider FROM (
+        SELECT ${model} AS model,provider,ts FROM aad_history_events
+        UNION ALL
+        SELECT ${model} AS model,provider,ts FROM aad_history_usage
+      ) observations WHERE model IS NOT NULL AND model <> ''
+      GROUP BY model,provider ORDER BY MAX(ts) DESC,model,provider LIMIT ?`,
+      [limit],
+    );
+  }
+
   async loadUsageIdentityMap(): Promise<Map<string, string>> {
     const identities = new Map<string, string>();
     if (!this.enabled) {

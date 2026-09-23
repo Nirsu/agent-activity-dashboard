@@ -1,56 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { apiFetch } from '../api/ws';
+import { useMemo } from 'react';
 import { tokens, usd } from '../format';
-
-interface Day {
-  day: string;
-  costUsd: number;
-  tokensIn: number;
-  tokensOut: number;
-  prompts: number;
-  sessions: number;
-  costKnown: boolean;
-  tokensKnown: boolean;
-  unknownUsageCount: number;
-  unattributedCostUsd: number;
-}
-interface TrendsData {
-  enabled: boolean;
-  backend?: string;
-  days: Day[];
-  byStream: Array<{
-    teamId: string;
-    teamName?: string;
-    costUsd: number;
-    tokens: number;
-    costKnown: boolean;
-  }>;
-}
-
-const WIDTH = 720;
-const HEIGHT = 160;
-const PAD = { l: 8, r: 8, t: 10, b: 22 };
+import { useTrends } from './trends/useTrends';
+import { DailyCostChart, trendDayLabel } from './trends/DailyCostChart';
 
 export function Trends() {
-  const [d, setD] = useState<TrendsData | null>(null);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    const load = () =>
-      apiFetch('/api/trends?days=14')
-        .then((r) => {
-          if (!r.ok) throw new Error('History request failed');
-          return r.json();
-        })
-        .then((data) => {
-          setD(data);
-          setError(false);
-        })
-        .catch(() => setError(true));
-    load();
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, []);
+  const { data: d, error, loading, refresh } = useTrends();
 
   const totals = useMemo(() => {
     const days = d?.days ?? [];
@@ -66,34 +20,53 @@ export function Trends() {
     };
   }, [d]);
 
-  if (d && !d.enabled)
+  const heading = (
+    <header className="activity-page-heading trends-heading">
+      <div>
+        <h1>Usage trends</h1>
+        <p>Last 14 days · all providers and streams</p>
+      </div>
+      <button className="dashboard-button" disabled={loading} onClick={refresh}>
+        {loading ? 'Refreshing…' : error ? 'Retry loading' : 'Refresh'}
+      </button>
+    </header>
+  );
+  if (d && !d.enabled) {
     return (
-      <div className="trends-empty">
-        History is unavailable on this server. Trends appear once the server persists events.
+      <div className="trends">
+        {heading}
+        <div className="trends-empty" role="status">
+          History is unavailable. Trends will appear when activity history is enabled.
+        </div>
       </div>
     );
-  if (!d)
+  }
+  if (!d) {
     return (
-      <div className="trends-empty">
-        {error ? 'History could not be loaded. Retrying…' : 'Loading trends…'}
+      <div className="trends">
+        {heading}
+        <div className="trends-empty" role="status">
+          {error
+            ? 'History could not be loaded. Try again using Retry loading.'
+            : 'Loading activity history…'}
+        </div>
       </div>
     );
+  }
 
   const days = d.days;
-  const maxCost = Math.max(0.0001, ...days.map((x) => x.costUsd));
-  const bw = (WIDTH - PAD.l - PAD.r) / Math.max(1, days.length);
-  const chartH = HEIGHT - PAD.t - PAD.b;
   const maxStreamCost = Math.max(0.0001, ...d.byStream.map((s) => s.costUsd));
 
   return (
     <div className="trends">
+      {heading}
       {error && <p role="status">History refresh failed. Showing the last received data.</p>}
-      <p>
-        {d.backend === 'postgres' ? 'PostgreSQL' : 'SQLite'} history · all providers and streams ·
-        known usage only. {totals.unknown} usage observations have an unknown cost.{' '}
-        {usd(totals.unattributed)} is not linked to a ticket or work item. Session totals count
-        daily appearances; they are not unique over the whole period.
-      </p>
+      {totals.unknown > 0 && (
+        <p className="trends-coverage-note">
+          {totals.unknown.toLocaleString()} usage observations have unknown costs. The totals below
+          include known usage only. <a href="#settings/brain">Review model pricing →</a>
+        </p>
+      )}
       <div className="trends-tiles">
         <Tile
           label="Known cost · 14d"
@@ -105,47 +78,65 @@ export function Trends() {
           value={totals.tokensKnown ? tokens(totals.tokens) : 'Unavailable'}
         />
         <Tile label="Prompts · 14d" value={String(totals.prompts)} />
-        <Tile label="Sessions · 14d" value={String(totals.sessions)} />
+        <Tile label="Session appearances · 14d" value={String(totals.sessions)} />
       </div>
 
       <div className="trends-chart-card">
-        <div className="trends-chart-title">Known cost per day · missing usage is excluded</div>
-        <svg
-          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="trends-svg"
-          role="img"
-          aria-label="Known cost per day"
-        >
-          {days.map((x, i) => {
-            const h = (x.costUsd / maxCost) * chartH;
-            const bx = PAD.l + i * bw;
-            const by = PAD.t + (chartH - h);
-            const showLabel = i % 2 === 0 || i === days.length - 1;
-            return (
-              <g key={x.day}>
-                <rect
-                  x={bx + 2}
-                  y={by}
-                  width={bw - 4}
-                  height={Math.max(0, h)}
-                  rx={3}
-                  className="trends-bar"
-                >
-                  <title>{`${x.day}: ${x.costKnown ? usd(x.costUsd) : 'cost unavailable'} · ${x.unknownUsageCount} unknown · ${x.prompts} prompts · ${x.sessions} sessions`}</title>
-                </rect>
-                {showLabel && (
-                  <text x={bx + bw / 2} y={HEIGHT - 6} textAnchor="middle" className="trends-axis">
-                    {x.day.slice(5)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
+        <h2 className="trends-chart-title">Known cost per day</h2>
+        <p className="trends-chart-caption">
+          USD · Missing usage is excluded. Exact values are available in the daily figures below.
+        </p>
+        <DailyCostChart days={days} />
+        {!totals.costKnown && (
+          <p className="trends-empty-inline">
+            No known costs for this period. Unknown costs are not treated as zero.
+          </p>
+        )}
+        <details className="trends-daily">
+          <summary>View daily figures</summary>
+          <div
+            className="trends-table-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label="Daily usage figures"
+          >
+            <table>
+              <caption>Daily usage · unavailable values are excluded from known totals</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Date</th>
+                  <th scope="col">Known cost</th>
+                  <th scope="col">Known tokens</th>
+                  <th scope="col">Prompts</th>
+                  <th scope="col">Sessions</th>
+                  <th scope="col">Unknown costs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {days.map((day) => (
+                  <tr key={day.day}>
+                    <th scope="row">
+                      <time dateTime={day.day}>{trendDayLabel(day.day)}</time>
+                    </th>
+                    <td>{day.costKnown ? usd(day.costUsd) : 'Unavailable'}</td>
+                    <td>
+                      {day.tokensKnown
+                        ? (day.tokensIn + day.tokensOut).toLocaleString()
+                        : 'Unavailable'}
+                    </td>
+                    <td>{day.prompts}</td>
+                    <td>{day.sessions}</td>
+                    <td>{day.unknownUsageCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       </div>
 
       <div className="trends-chart-card">
-        <div className="trends-chart-title">Cost by team · 14d</div>
+        <h2 className="trends-chart-title">Cost by team · 14 days</h2>
         <p className="trends-empty-inline">
           Shared activity appears in each team. Overall totals count it once.
         </p>
@@ -165,6 +156,18 @@ export function Trends() {
           </div>
         ))}
       </div>
+      <details className="trends-notes">
+        <summary>How to read these estimates</summary>
+        <p>
+          Session appearances count a session on each day it is active, so they are not unique
+          sessions over the whole period. Costs include known usage only; missing observations are
+          not zero-cost activity.
+        </p>
+        <p>
+          Dates follow the server’s time zone. {usd(totals.unattributed)} is not linked to a ticket
+          or work item.
+        </p>
+      </details>
     </div>
   );
 }

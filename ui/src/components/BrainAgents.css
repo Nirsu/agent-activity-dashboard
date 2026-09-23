@@ -305,6 +305,18 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+.brain-coverage-files summary {
+  padding: 0;
+  color: var(--brain-teal);
+  cursor: pointer;
+}
+.brain-coverage-files ul {
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+.brain-coverage-files li + li {
+  margin-top: 6px;
+}
 .brain-agents .brain-evidence-grid {
   grid-template-columns: minmax(0, 1fr);
   gap: 24px;

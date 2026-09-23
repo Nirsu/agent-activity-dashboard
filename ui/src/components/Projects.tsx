@@ -64,7 +64,7 @@ export function Projects() {
       repository.id,
     );
   return (
-    <main className="access-page">
+    <section className="access-page" aria-label="Projects">
       <AccessHeader
         title="Projects"
         description="Connect repositories for agent activity and Harmony Brain analyses."
@@ -254,7 +254,7 @@ export function Projects() {
                   Update the agent setup, select the local clones and restart each relay before
                   enabling the filter. The relay checks each Git origin against this shared list.
                 </p>
-                <a href="#accounts">Manage accounts & workstation tokens →</a>
+                <a href="#settings/accounts">Manage accounts & workstation tokens →</a>
               </div>
               <div>
                 <h3>02 · Check Brain readiness</h3>
@@ -270,6 +270,6 @@ export function Projects() {
           </details>
         </>
       )}
-    </main>
+    </section>
   );
 }

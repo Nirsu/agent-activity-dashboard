@@ -226,7 +226,7 @@ export function MemorySourceForm({
           {adminRequired && (
             <>
               <br />
-              <a href="#brain/settings">Set administrator access in Settings →</a>
+              <a href="#settings/brain">Set administrator access in Settings →</a>
             </>
           )}
         </p>

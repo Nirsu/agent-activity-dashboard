@@ -109,7 +109,7 @@ export function AnalysisSetup({
           {!state.configured && (
             <p className="brain-warning">
               {state.reason || 'Configure model access on the server to run an analysis.'}{' '}
-              <a href="#brain/settings">Open settings</a>
+              <a href="#settings/brain">Open settings</a>
             </p>
           )}
           <div className="brain-agents-revisions">

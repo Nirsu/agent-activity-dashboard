@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useRef, useState } from 'react';
 import { GraphCanvas } from './brain/GraphCanvas';
-import { connectedNodes, filterGraph, graphKinds } from './brain/graph';
+import { connectedNodes, filterGraph, graphKinds, sourcePreview } from './brain/graph';
 import type { GraphKind, MemoryGraph } from './brain/graph';
 import { useMemoryGraph } from './brain/useMemoryGraph';
 import './BrainGraph.css';
@@ -274,7 +274,9 @@ function GraphExplorer({
               {selected.analysisId && (
                 <p className="brain-graph-origin">Snapshot preserved from a recorded analysis.</p>
               )}
-              <p className="brain-graph-summary">{selected.summary}</p>
+              <p className="brain-graph-summary">
+                {selected.kind === 'source' ? sourcePreview(selected.summary) : selected.summary}
+              </p>
               {selected.sourceId && (
                 <button
                   className="brain-graph-open"

@@ -72,10 +72,7 @@ export function AccessHeader({
   return (
     <header className="access-heading">
       <div>
-        <div className="access-eyebrow">
-          Workspace settings <span>/</span> {title}
-        </div>
-        <h1>{title}</h1>
+        <h2 className="access-page-title">{title}</h2>
         <p>{description}</p>
       </div>
       <div className="access-actions">

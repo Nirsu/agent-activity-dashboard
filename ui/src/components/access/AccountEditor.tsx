@@ -101,7 +101,7 @@ export function AccountEditor({
       </fieldset>
       <p>
         All active accounts share access to the registered Brain projects. Manage the common
-        repository filter in <a href="#projects">Projects</a>.
+        repository filter in <a href="#settings/projects">Projects</a>.
       </p>
       {account && (
         <p>

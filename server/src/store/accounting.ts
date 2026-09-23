@@ -136,6 +136,7 @@ export class UsageAccounting {
     const dUsd =
       reportedCost ??
       estimateModelCost({
+        ts: event.ts,
         model: event.model ?? session?.model,
         inputTokens: dTokensIn ?? undefined,
         outputTokens: dTokensOut ?? undefined,
@@ -187,6 +188,7 @@ export class UsageAccounting {
           ? previous.dUsd
           : (reportedCost ??
             estimateModelCost({
+              ts: current.ts,
               model: current.model,
               inputTokens: current.dTokensIn ?? undefined,
               outputTokens: current.dTokensOut ?? undefined,

@@ -36,6 +36,19 @@ export const graphKinds: { kind: GraphKind; label: string; color: string }[] = [
   { kind: 'entity', label: 'Extracted concept', color: '#b9c59a' },
 ];
 
+// Graph summaries are truncated previews. Keep captured sources untouched and
+// strip only recognized Notion block markup, never arbitrary angle brackets.
+export function sourcePreview(summary: string): string {
+  if (!/^\s*<(?:callout|aside|table|empty-block|page)\b/i.test(summary)) {
+    return summary;
+  }
+  return summary
+    .replace(/<\/?(?:callout|aside|table|tr|td|th|br|empty-block|page)\b[^>]*>/gi, ' ')
+    .replace(/<\/?(?:callout|aside|table|tr|td|th|br|empty-block|page)\b[^>]*$/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function connectedNodes(nodeId: string, edges: GraphEdge[]) {
   const ids = new Set([nodeId]);
   for (const edge of edges) {

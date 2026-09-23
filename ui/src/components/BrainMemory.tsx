@@ -77,7 +77,7 @@ export default function BrainMemory() {
             {memory.error || memory.connectionError}
             {memory.adminRequired && (
               <p>
-                <a href="#brain/settings">Set administrator access in Settings →</a>
+                <a href="#settings/brain">Set administrator access in Settings →</a>
               </p>
             )}
             {memory.connectionError && state && (
@@ -198,7 +198,7 @@ export default function BrainMemory() {
                   Clear filters
                 </button>
               ) : !state.notion.connected ? (
-                <a href="#brain/settings">Connect Notion →</a>
+                <a href="#settings/brain">Connect Notion →</a>
               ) : (
                 <button
                   className="brain-button primary"
@@ -289,7 +289,7 @@ function MemoryHealth({ state, readyCount }: { state: MemoryState; readyCount: n
           <strong>Memory index</strong>
           <span>{state.cognee.available ? 'Available' : 'Unavailable'}</span>
         </div>
-        <a href="#brain/settings">Connection settings →</a>
+        <a href="#settings/brain">Connection settings →</a>
       </div>
       <div className="brain-memory-health-summary">
         <strong>{readyCount} ready for analysis</strong>

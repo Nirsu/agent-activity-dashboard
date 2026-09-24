@@ -5,6 +5,8 @@ export interface TrendsQuery {
   period?: string;
   start?: string;
   end?: string;
+  team?: string;
+  person?: string;
 }
 
 export interface TrendsUsageTotals {
@@ -32,10 +34,24 @@ export interface TrendsBucket extends TrendsTotals {
 }
 
 export interface TrendsBreakdown extends TrendsUsageTotals {
+  cachedTokens: number;
+  cacheKnown: boolean;
   tokens: number;
   tokensInKnown: boolean;
   tokensOutKnown: boolean;
   unknownTokenCount: number;
+}
+
+export interface TrendsAudienceRow {
+  id: string;
+  name: string;
+  current: TrendsTotals;
+  previous: TrendsTotals;
+}
+
+export interface TrendsAudienceOptions {
+  teams: Array<{ id: string; name: string }>;
+  people: Array<{ id: string; name: string; teamIds: string[] }>;
 }
 
 export interface TrendsReport {
@@ -62,6 +78,10 @@ export interface TrendsReport {
   byProvider: Array<TrendsBreakdown & { provider: string }>;
   byModel: Array<TrendsBreakdown & { provider: string; model: string }>;
   byStream: Array<TrendsBreakdown & { teamId: string; teamName: string }>;
+  byTeam: TrendsAudienceRow[];
+  byPerson: TrendsAudienceRow[];
+  audience: TrendsAudienceOptions;
+  filters: { team?: string; person?: string };
   coverage: {
     ignoredCostCount?: number;
     retentionDays: number;

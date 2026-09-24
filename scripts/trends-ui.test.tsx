@@ -122,6 +122,71 @@ async function mountTrends(t: TestContext) {
   };
 }
 
+test('Trends drills into a team and person, preserves filters across periods and rejects stale responses', async (t) => {
+  const page = await mountTrends(t);
+  const report = trendsFixture();
+  await page.reply(report);
+  const audience = () => page.root().findByProps({ 'aria-label': 'Team and person usage' });
+  const rowLink = () => audience().findByProps({ className: 'trends-audience-link' });
+  await act(async () => rowLink().props.onClick());
+  assert.equal(page.requests.at(-1)!.url.searchParams.get('team'), 'test-team');
+  assert.equal(page.requests.at(-1)!.url.searchParams.has('person'), false);
+  await page.reply({ ...report, filters: { team: 'test-team' } });
+  assert.equal(page.button('People', page.group('Audience dimension')).props['aria-pressed'], true);
+  assert.match(renderedText(audience()), /calm-otter-01/);
+  await act(async () => rowLink().props.onClick());
+  const personRequest = page.requests.at(-1)!;
+  assert.equal(personRequest.url.searchParams.get('person'), 'person-a');
+  assert.equal(personRequest.url.searchParams.get('team'), 'test-team');
+  await page.click('Today');
+  assert.equal(personRequest.signal.aborted, true);
+  assert.equal(page.requests.at(-1)!.url.search, '?period=today&team=test-team&person=person-a');
+  const active = page.requests.length - 1;
+  await page.reply({ ...report, summary: trendTotals({ costUsd: 999 }) }, active - 1);
+  assert.doesNotMatch(page.text(), /\$999/);
+  await page.reply({ ...report, filters: { team: 'test-team', person: 'person-a' } }, active);
+  assert.equal(page.root().findByProps({ 'aria-label': 'Person' }).props.value, 'person-a');
+  assert.match(renderedText(audience()), /Known cached tokens.*100/);
+  assert.match(renderedText(audience()), /73.5% vs previous period/);
+  await page.click('Clear filters');
+  assert.equal(page.requests.at(-1)!.url.search, '?period=today');
+  await page.reply(report);
+  const change = async (label: string, value: string) =>
+    act(async () =>
+      page.root().findByProps({ 'aria-label': label }).props.onChange({ target: { value } }),
+    );
+  await change('Person', 'person-a');
+  await page.reply({ ...report, filters: { person: 'person-a' } });
+  await change('Team', 'test-team');
+  assert.equal(
+    page.requests.at(-1)!.url.searchParams.has('person'),
+    false,
+    'changing team resets the person',
+  );
+  await page.reply({ ...report, byTeam: [], byPerson: [], filters: { team: 'test-team' } });
+  assert.match(page.text(), /No activity matches these filters/);
+  assert.equal(page.button('Clear filters').props.disabled, undefined);
+});
+
+test('audience comparisons respect missing costs and token measurements', async (t) => {
+  const page = await mountTrends(t);
+  const report = trendsFixture();
+  report.byTeam[0].current = trendTotals({
+    unknownUsageCount: 1,
+    unknownTokenCount: 1,
+    cacheKnown: false,
+  });
+  await page.reply(report);
+  const section = page.root().findByProps({ 'aria-label': 'Team and person usage' });
+  assert.match(renderedText(section), /Cost comparison unavailable/);
+  assert.match(renderedText(section), /Partial cost/);
+  const compare = section.findByType('select');
+  await act(async () => compare.props.onChange({ target: { value: 'tokens' } }));
+  assert.match(renderedText(section), /Token comparison unavailable/);
+  await act(async () => compare.props.onChange({ target: { value: 'prompts' } }));
+  assert.match(renderedText(section), /Prompts change.*No change/);
+});
+
 test('Trends retries failures, keeps the same range on failed polling, and cleans up pending work', async (t) => {
   const page = await mountTrends(t);
   assert.equal(page.requests.length, 1);
@@ -149,7 +214,14 @@ test('Trends retries failures, keeps the same range on failed polling, and clean
   await act(async () => page.requests[2].complete(new Response('', { status: 500 })));
   assert.match(page.text(), /Showing the last received data/);
   assert.equal(page.cardValue('Known cost'), '$1.73');
-  assert.equal(page.root().findByType('tbody').findAllByType('tr').length, 2);
+  assert.equal(
+    page
+      .root()
+      .findByProps({ 'aria-label': 'Detailed usage figures' })
+      .findByType('tbody')
+      .findAllByType('tr').length,
+    2,
+  );
   await page.click('Retry loading');
   const pending = page.requests[3];
   assert.equal(pending.signal.aborted, false);
@@ -410,7 +482,11 @@ test('Trends switches chart and breakdown metrics and preserves exact figures an
     }),
   );
   assert.match(svg().props['aria-label'], /Known cost per week/);
-  const missingHistory = page.root().findByType('tbody').findAllByType('tr')[0];
+  const missingHistory = page
+    .root()
+    .findByProps({ 'aria-label': 'Detailed usage figures' })
+    .findByType('tbody')
+    .findAllByType('tr')[0];
   assert.deepEqual(
     missingHistory.findAllByType('td').map(renderedText),
     Array(7).fill('Unavailable'),
@@ -458,7 +534,13 @@ test('partial token observations hide missing directions and percentage comparis
   assert.match(renderedText(page.card('Known tokens')), /100 input · Unknown output/);
   assert.match(renderedText(page.card('Known tokens')), /Token comparison unavailable/);
   assert.doesNotMatch(renderedText(page.card('Known tokens')), /50%/);
-  const cells = () => page.root().findByType('tbody').findAllByType('td').map(renderedText);
+  const cells = () =>
+    page
+      .root()
+      .findByProps({ 'aria-label': 'Detailed usage figures' })
+      .findByType('tbody')
+      .findAllByType('td')
+      .map(renderedText);
   assert.equal(cells()[1], '100');
   assert.equal(cells()[2], 'Unavailable');
   await page.poll();

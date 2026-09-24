@@ -4,10 +4,12 @@ import { SummaryCards } from './trends/SummaryCards';
 import { UsageChart } from './trends/UsageChart';
 import { UsageBreakdown } from './trends/UsageBreakdown';
 import { ReportContext } from './trends/ReportContext';
+import { AudienceFilters } from './trends/AudienceFilters';
+import { AudienceTable } from './trends/AudienceTable';
 import './trends/trends.css';
 
 export function Trends() {
-  const { data, error, loading, selection, setSelection, refresh } = useTrends();
+  const { data, error, loading, selection, audience, setSelection, refresh } = useTrends();
   return (
     <div className="trends trends-page" aria-busy={loading}>
       <header className="activity-page-heading trends-heading">
@@ -21,6 +23,7 @@ export function Trends() {
         </button>
       </header>
       <PeriodControls selection={selection} data={data} onChange={setSelection} />
+      <AudienceFilters selection={selection} options={audience} onChange={setSelection} />
       {!data ? (
         <div className="trends-empty trends-loading-state" role="status">
           <span className="trends-state-icon" aria-hidden="true">
@@ -48,6 +51,7 @@ export function Trends() {
           <ReportContext data={data} section="coverage" />
           <SummaryCards data={data} />
           <UsageChart data={data} />
+          <AudienceTable data={data} selection={selection} onChange={setSelection} />
           <div className="trends-detail-grid">
             <UsageBreakdown data={data} />
             <ReportContext data={data} section="insights" />

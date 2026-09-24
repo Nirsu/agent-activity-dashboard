@@ -6,6 +6,8 @@ export function trendTotals(overrides: Partial<TrendsTotals> = {}): TrendsTotals
     tokensIn: 250,
     tokensOut: 70,
     tokens: 320,
+    cachedTokens: 100,
+    cacheKnown: true,
     prompts: 3,
     sessions: 2,
     costKnown: true,
@@ -81,6 +83,27 @@ export function trendsFixture(overrides: Partial<TrendsReport> = {}): TrendsRepo
     ],
     byModel: [{ ...trendTotals(), provider: 'openai', model: 'gpt-test-model' }],
     byStream: [{ ...trendTotals(), teamId: 'test-team', teamName: 'Test team' }],
+    byTeam: [
+      {
+        id: 'test-team',
+        name: 'Test team',
+        current: trendTotals(),
+        previous: trendTotals({ costUsd: 1 }),
+      },
+    ],
+    byPerson: [
+      {
+        id: 'person-a',
+        name: 'calm-otter-01',
+        current: trendTotals(),
+        previous: trendTotals({ costUsd: 1 }),
+      },
+    ],
+    audience: {
+      teams: [{ id: 'test-team', name: 'Test team' }],
+      people: [{ id: 'person-a', name: 'calm-otter-01', teamIds: ['test-team'] }],
+    },
+    filters: {},
     coverage: {
       retentionDays: 180,
       earliestAvailableAt: start - 90 * 86_400_000,

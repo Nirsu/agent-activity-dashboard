@@ -47,6 +47,7 @@ export interface UsageDelta {
   client?: AgentClient;
   sessionId?: string;
   agent?: string;
+  accountId?: string;
   teamId?: string;
   teams?: ActivityTeam[];
   ticket?: string;
@@ -138,6 +139,7 @@ export interface AgentEvent {
   // identity / grouping
   userEmail?: string; // cleared when anonymize is on
   agent?: string; // stable pseudonym (present always; = email when not anonymized)
+  accountId?: string;
   teamId?: string;
   teams?: ActivityTeam[];
   department?: string;
@@ -199,6 +201,7 @@ export interface SessionState {
   department?: string;
   userEmail?: string;
   agent?: string; // stable pseudonym for directory/map grouping
+  accountId?: string;
   repo?: string;
   branch?: string;
   ticket?: string;

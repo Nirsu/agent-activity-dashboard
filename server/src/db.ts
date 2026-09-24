@@ -17,6 +17,9 @@ import { getPostgresPool } from './persistence/postgres.js';
 import { PromptTracker, PROMPT_PAIR_WINDOW_MS } from './store/prompts.js';
 import { resolveTrendsRange, type TrendsInterval } from './trends/range.js';
 import type { TrendsBreakdown, TrendsQuery, TrendsReport, TrendsTotals } from './trends/types.js';
+import { audienceDimension, jsonField, trendsSource, validateAudience } from './trends/scope.js';
+import { historyPerson, historyTeams, matchesAudience } from './trends/attribution.js';
+import { agentLabel } from './identity.js';
 
 export type { UsageDelta } from './types.js';
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +60,8 @@ interface TotalsRow {
   unknown_tokens?: number | string;
   known_input?: number | string;
   known_output?: number | string;
+  cached_tokens?: number | string | null;
+  known_cache?: number | string;
 }
 
 export type StoredUsage = Omit<UsageDelta, 'source'> & { source: string };
@@ -111,6 +116,8 @@ function breakdownTotals(row?: TotalsRow): TrendsBreakdown {
     tokensInKnown: Number(row?.known_input ?? 0) > 0,
     tokensOutKnown: Number(row?.known_output ?? 0) > 0,
     unknownTokenCount: Number(row?.unknown_tokens ?? 0),
+    cachedTokens: Number(row?.cached_tokens ?? 0),
+    cacheKnown: Number(row?.known_cache ?? 0) > 0,
   };
 }
 
@@ -268,6 +275,7 @@ export class History {
       parentRunId: event.parentRunId,
       model: event.model,
       agent: event.agent,
+      accountId: event.accountId,
       teamId: event.teamId,
       teams: event.teams,
       repo: event.repo,
@@ -632,6 +640,7 @@ export class History {
       for (const key of Object.keys(next) as Array<keyof typeof next>) {
         if (
           key === 'costKnown' ||
+          key === 'cacheKnown' ||
           key === 'tokensKnown' ||
           key === 'tokensInKnown' ||
           key === 'tokensOutKnown'
@@ -707,27 +716,53 @@ export class History {
     };
   }
 
-  private async reportSeries(intervals: TrendsInterval[]): Promise<TrendsTotals[]> {
+  private reportTotalsSql(): string {
+    const cached = jsonField(Boolean(this.pool), 'data', 'cachedInputTokens');
+    return `${REPORT_TOTALS_SQL}, SUM(CAST(${cached} AS BIGINT)) AS cached_tokens,
+      SUM(CASE WHEN ${cached} IS NOT NULL THEN 1 ELSE 0 END) AS known_cache`;
+  }
+
+  private async reportSeries(
+    intervals: TrendsInterval[],
+    query: TrendsQuery,
+    aliases: ReadonlyMap<string, ActivityTeam>,
+  ): Promise<TrendsTotals[]> {
     const result = intervals.map(() => reportTotals());
     const since = intervals[0].start;
     const until = intervals[intervals.length - 1].end;
+    const usageScope = trendsSource(
+      'aad_history_usage',
+      Boolean(this.pool),
+      since,
+      until,
+      query,
+      aliases,
+    );
+    const eventScope = trendsSource(
+      'aad_history_events',
+      Boolean(this.pool),
+      since,
+      until,
+      query,
+      aliases,
+    );
     // Boundaries are validated timestamps, never user-provided SQL expressions.
     const bucket = `CASE ${intervals.map((interval, index) => `WHEN ts < ${interval.end} THEN ${index}`).join(' ')} ELSE -1 END`;
     const [usage, sessions] = await Promise.all([
       this.rows<TotalsRow & { bucket: number }>(
-        `SELECT ${bucket} AS bucket, ${REPORT_TOTALS_SQL}
-         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY bucket`,
-        [since, until],
+        `SELECT ${bucket} AS bucket, ${this.reportTotalsSql()}
+         FROM (${usageScope.sql}) scoped GROUP BY bucket`,
+        usageScope.values,
       ),
       this.rows<{ bucket: number; sessions: number | string }>(
         `SELECT bucket, COUNT(*) AS sessions FROM (
-           SELECT ${bucket} AS bucket, provider, session_id FROM aad_history_events
-           WHERE ts>=? AND ts<? AND session_id IS NOT NULL AND session_id<>''
+           SELECT ${bucket} AS bucket, provider, session_id FROM (${eventScope.sql}) scoped
+           WHERE session_id IS NOT NULL AND session_id<>''
            UNION
-           SELECT ${bucket} AS bucket, provider, session_id FROM aad_history_usage
-           WHERE ts>=? AND ts<? AND session_id IS NOT NULL AND session_id<>''
+           SELECT ${bucket} AS bucket, provider, session_id FROM (${usageScope.sql}) scoped
+           WHERE session_id IS NOT NULL AND session_id<>''
          ) active_sessions GROUP BY bucket`,
-        [since, until, since, until],
+        [...eventScope.values, ...usageScope.values],
       ),
     ]);
     for (const row of usage) {
@@ -739,11 +774,127 @@ export class History {
     return result;
   }
 
+  private async audienceTotals(
+    since: number,
+    until: number,
+    query: TrendsQuery,
+    aliases: ReadonlyMap<string, ActivityTeam>,
+    dimension: 'team' | 'person',
+  ): Promise<Map<string, { id: string; name: string; totals: TrendsTotals; lastSeen: number }>> {
+    const postgres = Boolean(this.pool);
+    const usage = trendsSource('aad_history_usage', postgres, since, until, query, aliases);
+    const events = trendsSource('aad_history_events', postgres, since, until, query, aliases);
+    const group = audienceDimension(postgres, dimension);
+    const [measures, sessions] = await Promise.all([
+      this.rows<TotalsRow & { id: string; name: string; last_seen: number | string }>(
+        `SELECT ${group.id} AS id, ${group.name} AS name, MAX(ts) AS last_seen, ${this.reportTotalsSql()}
+         FROM (${usage.sql}) scoped ${group.join} GROUP BY ${group.id},${group.name}`,
+        usage.values,
+      ),
+      this.rows<{ id: string; sessions: number | string; name: string }>(
+        `SELECT id, MAX(name) AS name,
+          COUNT(DISTINCT ${postgres ? 'jsonb_build_array(provider,session_id)::text' : 'json_array(provider,session_id)'}) AS sessions FROM (
+          SELECT ${group.id} AS id, MAX(${group.name}) AS name, provider, session_id
+          FROM (${events.sql}) scoped ${group.join}
+          WHERE session_id IS NOT NULL AND session_id<>'' GROUP BY ${group.id},provider,session_id
+          UNION
+          SELECT ${group.id} AS id, MAX(${group.name}) AS name, provider, session_id
+          FROM (${usage.sql}) scoped ${group.join}
+          WHERE session_id IS NOT NULL AND session_id<>'' GROUP BY ${group.id},provider,session_id
+        ) combined GROUP BY id`,
+        [...events.values, ...usage.values],
+      ),
+    ]);
+    const result = new Map<
+      string,
+      { id: string; name: string; totals: TrendsTotals; lastSeen: number }
+    >();
+    for (const row of measures) {
+      const current = result.get(row.id);
+      const next = reportTotals(row);
+      if (!current) {
+        result.set(row.id, {
+          id: row.id,
+          name: row.name,
+          totals: next,
+          lastSeen: Number(row.last_seen),
+        });
+        continue;
+      }
+      if (Number(row.last_seen) >= current.lastSeen) {
+        current.name = row.name;
+        current.lastSeen = Number(row.last_seen);
+      }
+      for (const key of Object.keys(next) as Array<keyof TrendsTotals>) {
+        if (typeof next[key] === 'boolean') {
+          (current.totals[key] as boolean) ||= next[key] as boolean;
+        } else {
+          (current.totals[key] as number) += next[key] as number;
+        }
+      }
+    }
+    for (const row of sessions) {
+      let current = result.get(row.id);
+      if (!current) {
+        current = { id: row.id, name: row.name, totals: reportTotals(), lastSeen: 0 };
+        result.set(row.id, current);
+      }
+      current.totals.sessions = Number(row.sessions);
+    }
+    return result;
+  }
+
+  private async audienceOptions(
+    since: number,
+    until: number,
+    aliases: ReadonlyMap<string, ActivityTeam>,
+  ): Promise<TrendsReport['audience']> {
+    const usage = trendsSource('aad_history_usage', Boolean(this.pool), since, until, {}, aliases);
+    const events = trendsSource(
+      'aad_history_events',
+      Boolean(this.pool),
+      since,
+      until,
+      {},
+      aliases,
+    );
+    const rows = await this.rows<{
+      person_id: string;
+      memberships: ActivityTeam[] | string;
+      last_seen: number | string;
+    }>(
+      `SELECT person_id, memberships, MAX(ts) AS last_seen FROM (
+        SELECT person_id,memberships,ts FROM (${usage.sql}) scoped
+        UNION ALL SELECT person_id,memberships,ts FROM (${events.sql}) scoped
+      ) combined GROUP BY person_id,memberships ORDER BY last_seen`,
+      [...usage.values, ...events.values],
+    );
+    const teams = new Map<string, ActivityTeam>();
+    const people = new Map<string, { id: string; name: string; teamIds: string[] }>();
+    for (const row of rows) {
+      const memberships = document(row.memberships);
+      let person = people.get(row.person_id);
+      if (!person) {
+        person = { id: row.person_id, name: row.person_id, teamIds: [] };
+        people.set(person.id, person);
+      }
+      for (const team of memberships) {
+        teams.set(team.id, team);
+        if (!person.teamIds.includes(team.id)) {
+          person.teamIds.push(team.id);
+        }
+      }
+    }
+    return { teams: [...teams.values()], people: [...people.values()] };
+  }
+
   async trendsReport(
     query: TrendsQuery,
     legacyTeamAliases: ReadonlyMap<string, ActivityTeam> = new Map(),
     now = Date.now(),
+    personNames: ReadonlyMap<string, string> = new Map(),
   ): Promise<TrendsReport> {
+    validateAudience(query);
     const range = resolveTrendsRange(query, now);
     const { start, end, previousStart, previousEnd } = range.period;
     const retentionDays = this.options.retentionDays ?? config.retentionDays;
@@ -758,6 +909,10 @@ export class History {
       byProvider: [],
       byModel: [],
       byStream: [],
+      byTeam: [],
+      byPerson: [],
+      audience: { teams: [], people: [] },
+      filters: { team: query.team, person: query.person },
       coverage: {
         retentionDays,
         earliestAvailableAt: null,
@@ -772,35 +927,66 @@ export class History {
     const model = this.pool ? "data->>'model'" : "json_extract(data, '$.model')";
     const modelIdentity = `COALESCE(NULLIF(${model},''),'Unknown model')`;
     const providerIdentity = "COALESCE(NULLIF(provider,''),'unknown')";
-    const [summary, previous, days, buckets, providers, models, teams, promptEvents, available] =
-      await Promise.all([
-        this.reportSeries([{ start, end, day: range.period.startDate }]),
-        this.reportSeries([{ start: previousStart, end: previousEnd, day: '' }]),
-        this.reportSeries(range.days),
-        range.buckets === range.days ? Promise.resolve(null) : this.reportSeries(range.buckets),
-        this.rows<TotalsRow & { provider: string }>(
-          `SELECT ${providerIdentity} AS provider, ${REPORT_TOTALS_SQL}
-         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY ${providerIdentity} ORDER BY cost DESC`,
-          [start, end],
-        ),
-        this.rows<TotalsRow & { provider: string; model: string }>(
-          `SELECT ${providerIdentity} AS provider, ${modelIdentity} AS model, ${REPORT_TOTALS_SQL}
-         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY ${providerIdentity},${modelIdentity} ORDER BY cost DESC`,
-          [start, end],
-        ),
-        this.teamTotals(start, end, legacyTeamAliases),
-        this.loadPromptEvents(
-          previousStart - PROMPT_PAIR_WINDOW_MS,
-          Math.min(now, end + PROMPT_PAIR_WINDOW_MS),
-        ),
-        this.rows<{ earliest: number | string | null }>(
-          `SELECT MIN(ts) AS earliest FROM (
+    const scope = trendsSource(
+      'aad_history_usage',
+      Boolean(this.pool),
+      start,
+      end,
+      query,
+      legacyTeamAliases,
+    );
+    const [
+      summary,
+      previous,
+      days,
+      buckets,
+      providers,
+      models,
+      teams,
+      previousTeams,
+      people,
+      previousPeople,
+      audience,
+      promptEvents,
+      available,
+    ] = await Promise.all([
+      this.reportSeries([{ start, end, day: range.period.startDate }], query, legacyTeamAliases),
+      this.reportSeries(
+        [{ start: previousStart, end: previousEnd, day: '' }],
+        query,
+        legacyTeamAliases,
+      ),
+      this.reportSeries(range.days, query, legacyTeamAliases),
+      range.buckets === range.days
+        ? Promise.resolve(null)
+        : this.reportSeries(range.buckets, query, legacyTeamAliases),
+      this.rows<TotalsRow & { provider: string }>(
+        `SELECT ${providerIdentity} AS provider, ${this.reportTotalsSql()}
+         FROM (${scope.sql}) scoped GROUP BY ${providerIdentity} ORDER BY cost DESC`,
+        scope.values,
+      ),
+      this.rows<TotalsRow & { provider: string; model: string }>(
+        `SELECT ${providerIdentity} AS provider, ${modelIdentity} AS model, ${this.reportTotalsSql()}
+         FROM (${scope.sql}) scoped GROUP BY ${providerIdentity},${modelIdentity} ORDER BY cost DESC`,
+        scope.values,
+      ),
+      this.audienceTotals(start, end, query, legacyTeamAliases, 'team'),
+      this.audienceTotals(previousStart, previousEnd, query, legacyTeamAliases, 'team'),
+      this.audienceTotals(start, end, query, legacyTeamAliases, 'person'),
+      this.audienceTotals(previousStart, previousEnd, query, legacyTeamAliases, 'person'),
+      this.audienceOptions(previousStart, end, legacyTeamAliases),
+      this.loadPromptEvents(
+        previousStart - PROMPT_PAIR_WINDOW_MS,
+        Math.min(now, end + PROMPT_PAIR_WINDOW_MS),
+      ),
+      this.rows<{ earliest: number | string | null }>(
+        `SELECT MIN(ts) AS earliest FROM (
           SELECT MIN(ts) AS ts FROM aad_history_events WHERE ts<=?
           UNION ALL SELECT MIN(ts) AS ts FROM aad_history_usage WHERE ts<=?
         ) observed_history`,
-          [now, now],
-        ),
-      ]);
+        [now, now],
+      ),
+    ]);
     report.summary = summary[0];
     report.previous = previous[0];
     report.days = range.days.map((interval, index) => ({ ...interval, ...days[index] }));
@@ -817,12 +1003,42 @@ export class History {
       model: row.model,
       ...breakdownTotals(row),
     }));
-    report.byStream = teams;
     const tracker = new PromptTracker();
+    const promptAttribution = new Map<ReturnType<PromptTracker['values']>[number], AgentEvent>();
     for (const event of promptEvents) {
-      tracker.record(event);
+      const match = tracker.record(event);
+      if (
+        match &&
+        (!promptAttribution.has(match.prompt) || event.ts < promptAttribution.get(match.prompt)!.ts)
+      ) {
+        promptAttribution.set(match.prompt, event);
+      }
     }
     for (const prompt of tracker.values()) {
+      const event = promptAttribution.get(prompt)!;
+      if (!matchesAudience(event, query, legacyTeamAliases)) {
+        continue;
+      }
+      const isCurrent = prompt.ts >= start && prompt.ts < end;
+      const isPrevious = prompt.ts >= previousStart && prompt.ts < previousEnd;
+      if (isCurrent || isPrevious) {
+        for (const [groups, identities] of [
+          [isCurrent ? teams : previousTeams, historyTeams(event, legacyTeamAliases)],
+          [
+            isCurrent ? people : previousPeople,
+            [{ id: historyPerson(event), name: historyPerson(event) }],
+          ],
+        ] as const) {
+          for (const identity of identities) {
+            let row = groups.get(identity.id);
+            if (!row) {
+              row = { ...identity, totals: reportTotals(), lastSeen: event.ts };
+              groups.set(identity.id, row);
+            }
+            row.totals.prompts++;
+          }
+        }
+      }
       if (prompt.ts >= previousStart && prompt.ts < previousEnd) {
         report.previous.prompts += 1;
       }
@@ -845,6 +1061,37 @@ export class History {
         }
       }
     }
+    const personName = (id: string) =>
+      id === 'unassigned'
+        ? 'Unassigned'
+        : config.anonymize
+          ? agentLabel(`account:${id}`)
+          : (personNames.get(id) ?? 'Former account');
+    const audienceRows = (current: typeof teams, prior: typeof teams, person: boolean) =>
+      [...new Set([...current.keys(), ...prior.keys()])]
+        .map((id) => ({
+          id,
+          name: person ? personName(id) : (current.get(id) ?? prior.get(id))!.name,
+          current: current.get(id)?.totals ?? reportTotals(),
+          previous: prior.get(id)?.totals ?? reportTotals(),
+        }))
+        .sort(
+          (left, right) =>
+            right.current.costUsd - left.current.costUsd || left.name.localeCompare(right.name),
+        );
+    report.byTeam = audienceRows(teams, previousTeams, false);
+    report.byPerson = audienceRows(people, previousPeople, true);
+    report.byStream = [...teams.values()].map((row) => ({
+      teamId: row.id,
+      teamName: row.name,
+      ...row.totals,
+    }));
+    report.audience = {
+      teams: audience.teams.sort((a, b) => a.name.localeCompare(b.name)),
+      people: audience.people
+        .map((person) => ({ ...person, name: personName(person.id) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
     const earliest = available[0]?.earliest;
     report.coverage.earliestAvailableAt =
       earliest === null || earliest === undefined ? null : Number(earliest);

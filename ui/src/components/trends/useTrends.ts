@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../api/ws';
-import type { TrendsPeriod, TrendsReport } from '../../../../server/src/trends/types';
+import type {
+  TrendsAudienceOptions,
+  TrendsPeriod,
+  TrendsReport,
+} from '../../../../server/src/trends/types';
 
 export type {
   TrendsReport,
@@ -14,6 +18,8 @@ export interface TrendsSelection {
   period: TrendsPeriod;
   start?: string;
   end?: string;
+  team?: string;
+  person?: string;
 }
 
 interface RequestState {
@@ -29,12 +35,19 @@ export function trendsRequestPath(selection: TrendsSelection): string {
     parameters.set('start', selection.start ?? '');
     parameters.set('end', selection.end ?? '');
   }
+  if (selection.team) {
+    parameters.set('team', selection.team);
+  }
+  if (selection.person) {
+    parameters.set('person', selection.person);
+  }
   return `/api/trends?${parameters}`;
 }
 
 export function useTrends() {
   const [selection, setSelection] = useState<TrendsSelection>({ period: '14d' });
   const [revision, setRevision] = useState(0);
+  const [audience, setAudience] = useState<TrendsAudienceOptions>({ teams: [], people: [] });
   const key = trendsRequestPath(selection);
   const [state, setState] = useState<RequestState>({
     key,
@@ -64,6 +77,7 @@ export function useTrends() {
         }
         const result: TrendsReport = await response.json();
         if (!controller.signal.aborted) {
+          setAudience(result.audience);
           setState({ key, data: result, error: null, loading: false });
         }
       } catch {
@@ -95,6 +109,7 @@ export function useTrends() {
     error: current ? state.error : null,
     loading: current ? state.loading : true,
     selection,
+    audience,
     setSelection,
     refresh: () => setRevision((value) => value + 1),
   };

@@ -502,6 +502,9 @@ export class Store extends EventEmitter {
     if (event.agent) {
       session.agent = event.agent;
     }
+    if (event.accountId) {
+      session.accountId = event.accountId;
+    }
     if (event.repo) {
       session.repo = event.repo;
     }

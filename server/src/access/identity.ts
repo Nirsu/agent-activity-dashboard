@@ -32,6 +32,7 @@ export function attributeEvent(event: AgentEvent, principal?: AccessPrincipal | 
     responseId: deviceId(principal, event.responseId),
     metricSeriesId: deviceId(principal, event.metricSeriesId),
     userEmail: `account:${principal.account.id}`,
+    accountId: principal.account.id,
     agent: undefined,
     teamId: principal.teams[0]?.name,
     teams: principal.teams.map(({ id, name }) => ({ id, name })),

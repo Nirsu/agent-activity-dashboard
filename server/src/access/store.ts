@@ -154,6 +154,14 @@ export class AccessStore {
     return this.storage.entries<ManagedTeam>('access_teams').map(({ data }) => data);
   }
 
+  personNames(): ReadonlyMap<string, string> {
+    return new Map(
+      this.storage
+        .entries<DeveloperAccount>('access_accounts')
+        .map(({ data }) => [data.id, data.name]),
+    );
+  }
+
   legacyTeamAliases(): ReadonlyMap<string, Pick<ManagedTeam, 'id' | 'name'>> {
     const aliases =
       this.storage.get<LegacyTeamAlias[]>('access_settings', 'legacy-team-aliases') ?? [];

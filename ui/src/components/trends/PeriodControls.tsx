@@ -47,7 +47,7 @@ export function PeriodControls({
       return;
     }
     setError('');
-    onChange({ period: 'custom', start, end });
+    onChange({ ...selection, period: 'custom', start, end });
   }
 
   return (
@@ -62,13 +62,14 @@ export function PeriodControls({
               onClick={() => {
                 setCustomOpen(false);
                 setError('');
-                onChange({ period: item.period });
+                onChange({ ...selection, period: item.period });
               }}
             >
               {item.label}
             </button>
           ))}
           <button
+            className="trends-period-custom"
             type="button"
             aria-pressed={selection.period === 'custom'}
             aria-expanded={customOpen}
@@ -81,7 +82,7 @@ export function PeriodControls({
               setCustomOpen(!customOpen);
             }}
           >
-            Custom <span aria-hidden="true">⌄</span>
+            Custom <span className="trends-chevron" aria-hidden="true" />
           </button>
         </div>
         <div className="trends-period-meta">

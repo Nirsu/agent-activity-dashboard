@@ -39,6 +39,19 @@ Single-day charts use hourly buckets; longer selections use days or, beyond
 45 days, weeks. Switch between cost, tokens and prompts, or explore cost and
 token breakdowns by provider, model and team.
 
+Team and person filters apply to every chart, total and comparison. The usage table
+shows costs, input/output/cached tokens, prompts and unique sessions; select a team
+to explore its people, then select a person to inspect their activity and models.
+The comparison selector switches between cost, tokens, prompts and sessions.
+
+People are grouped by their authenticated account across workstations and providers.
+Display names follow `ANONYMIZE`: pseudonyms by default, account names when disabled.
+Older authenticated session identifiers can recover account attribution; other old
+activity stays Unassigned. Teams use the memberships recorded with each observation,
+so later membership changes do not move existing history. Shared usage appears in
+each associated team, while overall and per-person totals count it once. Known cache
+tokens are part of input tokens, not additional consumption.
+
 Headline sessions are unique across the selected period. Comparisons use the
 preceding calendar window of the same length, ending at the same local clock
 position for an ongoing period. This month therefore compares with the preceding

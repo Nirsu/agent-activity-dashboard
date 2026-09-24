@@ -515,11 +515,23 @@ export async function buildApp(): Promise<FastifyInstance> {
     }));
     app.get<{ Querystring: TrendsQuery & { days?: string } }>('/api/trends', async (req, reply) => {
       await writes.flush();
-      if (req.query.period !== undefined) {
+      if (
+        req.query.period !== undefined ||
+        req.query.team !== undefined ||
+        req.query.person !== undefined
+      ) {
         try {
-          const report = await history.trendsReport(req.query, access.legacyTeamAliases());
+          const report = await history.trendsReport(
+            req.query,
+            access.legacyTeamAliases(),
+            Date.now(),
+            access.personNames(),
+          );
           const ignoredModels = new Set(
-            pricing.state().models.filter((model) => model.ignored).map((model) => model.model),
+            pricing
+              .state()
+              .models.filter((model) => model.ignored)
+              .map((model) => model.model),
           );
           report.coverage.ignoredCostCount = report.byModel.reduce(
             (count, row) => count + (ignoredModels.has(row.model) ? row.unknownUsageCount : 0),
@@ -568,6 +580,10 @@ export async function buildApp(): Promise<FastifyInstance> {
             source: 'brain',
             ts: event.ts,
             provider: 'brain',
+            accountId: event.developerId,
+            teams: event.developerId
+              ? (access.teamsForAccount(event.developerId) ?? [])
+              : undefined,
             projectId: event.projectId,
             workItemId: event.workItemId ?? event.ticket,
             ticket: event.ticket,
@@ -578,6 +594,7 @@ export async function buildApp(): Promise<FastifyInstance> {
             dUsd: event.costUsd ?? null,
             dTokensIn: event.usageKnown ? (event.inputTokens ?? null) : null,
             dTokensOut: event.usageKnown ? (event.outputTokens ?? null) : null,
+            cachedInputTokens: event.usageKnown ? event.cachedInputTokens : undefined,
             costStatus: event.costUsd == null ? 'unknown' : 'estimated',
           };
           writes.enqueue(() => persistUsage(usage));

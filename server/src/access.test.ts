@@ -446,7 +446,13 @@ test('administrator controls accounts and secrets; shared projects, revocation a
     const first = await issue('Laptop');
     const second = await issue('Desktop');
     const headers = { authorization: `Bearer ${first.secret}` };
-    for (const url of ['/api/state', '/live', '/api/brain/access', '/api/brain/agents']) {
+    for (const url of [
+      '/api/state',
+      '/live',
+      '/api/brain/access',
+      '/api/brain/agents',
+      '/api/trends?period=7d',
+    ]) {
       assert.equal(
         (
           await app.inject({
@@ -490,6 +496,15 @@ test('administrator controls accounts and secrets; shared projects, revocation a
       assert.deepEqual(session.teams, [{ id: team.id, name: 'mobile' }]);
     }
     assert.doesNotMatch(JSON.stringify(board), /forged/);
+    const personReport = await app.inject({
+      url: `/api/trends?period=7d&person=${account.id}`,
+      headers: viewer,
+    });
+    assert.equal(personReport.statusCode, 200, personReport.body);
+    assert.equal(personReport.json().summary.sessions, 2);
+    assert.equal(personReport.json().byPerson.length, 1);
+    assert.equal(personReport.json().byPerson[0].name, agentLabel(`account:${account.id}`));
+    assert.doesNotMatch(personReport.body, /dev@example.test|Developer|forged/);
     const call = (name: string, args = {}, token = first.secret) =>
       app.inject({
         method: 'POST',
@@ -556,6 +571,15 @@ test('administrator controls accounts and secrets; shared projects, revocation a
     );
     assert.equal((await accountUpdate({ ...payload, teamIds: [] })).statusCode, 200);
     const unassignedBoard = (await app.inject({ url: '/api/state', headers: viewer })).json();
+    const historicalTeam = await app.inject({
+      url: `/api/trends?period=7d&person=${account.id}&team=${team.id}`,
+      headers: viewer,
+    });
+    assert.equal(
+      historicalTeam.json().summary.sessions,
+      2,
+      'editing membership preserves prior attribution',
+    );
     for (const session of unassignedBoard.sessions) {
       assert.deepEqual(session.teams, []);
       assert.equal(session.teamId, undefined);

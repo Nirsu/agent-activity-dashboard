@@ -1,36 +1,47 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../api/ws';
+import type { TrendsPeriod, TrendsReport } from '../../../../server/src/trends/types';
 
-export interface TrendDay {
-  day: string;
-  costUsd: number;
-  tokensIn: number;
-  tokensOut: number;
-  prompts: number;
-  sessions: number;
-  costKnown: boolean;
-  tokensKnown: boolean;
-  unknownUsageCount: number;
-  unattributedCostUsd: number;
+export type {
+  TrendsReport,
+  TrendsBucket,
+  TrendsTotals,
+  TrendsBreakdown,
+  TrendsPeriod,
+} from '../../../../server/src/trends/types';
+
+export interface TrendsSelection {
+  period: TrendsPeriod;
+  start?: string;
+  end?: string;
 }
 
-export interface TrendsData {
-  enabled: boolean;
-  days: TrendDay[];
-  byStream: Array<{
-    teamId: string;
-    teamName?: string;
-    costUsd: number;
-    tokens: number;
-    costKnown: boolean;
-  }>;
+interface RequestState {
+  key: string;
+  data: TrendsReport | null;
+  error: string | null;
+  loading: boolean;
+}
+
+export function trendsRequestPath(selection: TrendsSelection): string {
+  const parameters = new URLSearchParams({ period: selection.period });
+  if (selection.period === 'custom') {
+    parameters.set('start', selection.start ?? '');
+    parameters.set('end', selection.end ?? '');
+  }
+  return `/api/trends?${parameters}`;
 }
 
 export function useTrends() {
-  const [data, setData] = useState<TrendsData | null>(null);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [selection, setSelection] = useState<TrendsSelection>({ period: '14d' });
   const [revision, setRevision] = useState(0);
+  const key = trendsRequestPath(selection);
+  const [state, setState] = useState<RequestState>({
+    key,
+    data: null,
+    error: null,
+    loading: true,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -40,26 +51,32 @@ export function useTrends() {
         return;
       }
       pending = true;
-      setLoading(true);
+      setState((previous) => ({
+        key,
+        data: previous.key === key ? previous.data : null,
+        error: null,
+        loading: true,
+      }));
       try {
-        const response = await apiFetch('/api/trends?days=14', { signal: controller.signal });
+        const response = await apiFetch(key, { signal: controller.signal });
         if (!response.ok) {
           throw new Error('History request failed');
         }
-        const result: TrendsData = await response.json();
+        const result: TrendsReport = await response.json();
         if (!controller.signal.aborted) {
-          setData(result);
-          setError(false);
+          setState({ key, data: result, error: null, loading: false });
         }
       } catch {
         if (!controller.signal.aborted) {
-          setError(true);
+          setState((previous) => ({
+            key,
+            data: previous.key === key ? previous.data : null,
+            error: 'History could not be loaded. Try again using Retry loading.',
+            loading: false,
+          }));
         }
       } finally {
         pending = false;
-        if (!controller.signal.aborted) {
-          setLoading(false);
-        }
       }
     }
     void load();
@@ -68,7 +85,17 @@ export function useTrends() {
       controller.abort();
       clearInterval(timer);
     };
-  }, [revision]);
+  }, [key, revision]);
 
-  return { data, error, loading, refresh: () => setRevision((value) => value + 1) };
+  // Never display another range's totals before the new effect runs or after an
+  // obsolete request returns. Failed refreshes may retain this range's data.
+  const current = state.key === key;
+  return {
+    data: current ? state.data : null,
+    error: current ? state.error : null,
+    loading: current ? state.loading : true,
+    selection,
+    setSelection,
+    refresh: () => setRevision((value) => value + 1),
+  };
 }

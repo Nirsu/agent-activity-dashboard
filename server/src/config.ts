@@ -47,7 +47,7 @@ export const config = {
   idleMs: num('IDLE_MS', 45_000),
   sessionTtlMs: num('SESSION_TTL_MS', 30 * 60_000),
   codexMetadataDb: process.env.CODEX_METADATA_DB,
-  retentionDays: num('RETENTION_DAYS', 60),
+  retentionDays: num('RETENTION_DAYS', 190),
   // Pseudonymize identities (default on). Off only for a single-user local run.
   anonymize: bool('ANONYMIZE', true),
   anonymizeSalt: process.env.ANONYMIZE_SALT ?? 'aad-fleet',

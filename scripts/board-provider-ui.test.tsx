@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { act, create } from 'react-test-renderer';
 import type { Aggregate, SessionState } from '../ui/src/types';
+import { trendsFixture } from './trends-fixture';
 import {
   agentMapLayout,
   MAP_NODE_WIDTH,
@@ -81,11 +82,7 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
     dispatchEvent: browserEvents.dispatchEvent.bind(browserEvents),
     WebSocket: TestSocket,
     fetch: async (url: string) =>
-      new Response(
-        JSON.stringify(
-          url.includes('/api/trends') ? { enabled: true, days: [], byStream: [] } : { runs: [] },
-        ),
-      ),
+      new Response(JSON.stringify(url.includes('/api/trends') ? trendsFixture() : { runs: [] })),
   };
   for (const [name, value] of Object.entries(replacements)) {
     const original = Object.getOwnPropertyDescriptor(globalThis, name);
@@ -332,7 +329,8 @@ test('Board filters sessions, summaries and live updates by AI provider', async 
     0,
     'historical trends do not mix in live KPIs',
   );
-  assert.match(JSON.stringify(renderer.toJSON()), /all providers and streams/);
+  assert.match(JSON.stringify(renderer.toJSON()), /Usage trends/);
+  assert.match(JSON.stringify(renderer.toJSON()), /Unique sessions/);
   await navigate('Board');
   assert.equal(providerButton('Codex').props['aria-pressed'], true);
   assert.equal(cost(), 6, 'returning to the board restores its provider selection');

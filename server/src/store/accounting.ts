@@ -142,11 +142,6 @@ export class UsageAccounting {
         outputTokens: dTokensOut ?? undefined,
         cachedInputTokens: event.cachedInputTokens,
       });
-    // Transport events with no usage are activity, not a fabricated zero-cost
-    // request. A later response.completed event may supply the actual usage.
-    if (dUsd === null && dTokensIn === null && dTokensOut === null) {
-      return {};
-    }
     const namespace = ['codex_logs', event.sessionId ?? null];
     const dedupeKeys: string[] = [];
     if (event.requestId) {
@@ -159,6 +154,16 @@ export class UsageAccounting {
     const knownId = [usageId, ...dedupeKeys]
       .map((key) => this.usageIdentity.get(key) ?? (this.seen.has(key) ? key : undefined))
       .find((key) => key !== undefined);
+    // A cache-only event can complete known usage, but cannot create a request.
+    // Transport events without measurements remain activity only.
+    if (
+      dUsd === null &&
+      dTokensIn === null &&
+      dTokensOut === null &&
+      (!knownId || tokenMeasurement(event.cachedInputTokens) === null)
+    ) {
+      return {};
+    }
     if (knownId) {
       const newAliases = dedupeKeys.filter((key) => !this.usageIdentity.has(key));
       for (const key of dedupeKeys) {
@@ -176,24 +181,48 @@ export class UsageAccounting {
             previous.cachedInputTokens ?? tokenMeasurement(event.cachedInputTokens) ?? undefined,
           model: previous.model ?? event.model ?? session?.model,
         };
-        // Old records without provenance may contain reported values (including
-        // zero). Preserve them; only revise values we know were model estimates.
-        const preserveCost = previous.dUsd !== null && previous.costOrigin !== 'model';
-        current.costOrigin = preserveCost
-          ? previous.costOrigin
-          : reportedCost !== null
-            ? 'reported'
-            : 'model';
-        current.dUsd = preserveCost
-          ? previous.dUsd
-          : (reportedCost ??
-            estimateModelCost({
-              ts: current.ts,
-              model: current.model,
-              inputTokens: current.dTokensIn ?? undefined,
-              outputTokens: current.dTokensOut ?? undefined,
-              cachedInputTokens: current.cachedInputTokens,
-            }));
+        // Reported values and legacy values without provenance are authoritative.
+        // Historical estimates may improve, but always retain their saved tariff.
+        const historicalEstimate = previous.costOrigin === 'historical_estimate';
+        const preserveCost =
+          previous.dUsd !== null && previous.costOrigin !== 'model' && !historicalEstimate;
+        if (!preserveCost && reportedCost !== null) {
+          current.dUsd = reportedCost;
+          current.costOrigin = 'reported';
+          delete current.costEstimate;
+        } else if (historicalEstimate) {
+          const measurementsChanged =
+            current.dTokensIn !== previous.dTokensIn ||
+            current.dTokensOut !== previous.dTokensOut ||
+            current.cachedInputTokens !== previous.cachedInputTokens;
+          if (measurementsChanged && previous.costEstimate?.priceVersion.rates) {
+            const estimate = estimateModelCost(
+              {
+                model: current.model,
+                inputTokens: current.dTokensIn ?? undefined,
+                outputTokens: current.dTokensOut ?? undefined,
+                cachedInputTokens: current.cachedInputTokens,
+              },
+              previous.costEstimate.priceVersion.rates,
+            );
+            if (estimate !== null) {
+              current.dUsd = estimate;
+              current.costEstimate = {
+                ...previous.costEstimate,
+                missingCacheAssumedZero: current.cachedInputTokens === undefined,
+              };
+            }
+          }
+        } else if (!preserveCost) {
+          current.costOrigin = 'model';
+          current.dUsd = estimateModelCost({
+            ts: current.ts,
+            model: current.model,
+            inputTokens: current.dTokensIn ?? undefined,
+            outputTokens: current.dTokensOut ?? undefined,
+            cachedInputTokens: current.cachedInputTokens,
+          });
+        }
         current.costStatus = current.dUsd === null ? 'unknown' : 'estimated';
         this.requests.set(knownId, current);
         const changed =
@@ -216,6 +245,7 @@ export class UsageAccounting {
                 cachedInputTokens: current.cachedInputTokens,
                 model: current.model,
                 costOrigin: current.costOrigin,
+                costEstimate: current.costEstimate,
               },
             },
           };

@@ -15,6 +15,8 @@ import type {
 import { config } from './config.js';
 import { getPostgresPool } from './persistence/postgres.js';
 import { PromptTracker, PROMPT_PAIR_WINDOW_MS } from './store/prompts.js';
+import { resolveTrendsRange, type TrendsInterval } from './trends/range.js';
+import type { TrendsBreakdown, TrendsQuery, TrendsReport, TrendsTotals } from './trends/types.js';
 
 export type { UsageDelta } from './types.js';
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +54,9 @@ interface TotalsRow {
   usage_count: number | string;
   unattributed_count: number | string;
   unattributed_cost: number | string | null;
+  unknown_tokens?: number | string;
+  known_input?: number | string;
+  known_output?: number | string;
 }
 
 export type StoredUsage = Omit<UsageDelta, 'source'> & { source: string };
@@ -88,6 +93,30 @@ const TOTALS_SQL = `
   COUNT(*) AS usage_count,
   SUM(CASE WHEN ticket IS NULL AND work_item_id IS NULL THEN 1 ELSE 0 END) AS unattributed_count,
   SUM(CASE WHEN ticket IS NULL AND work_item_id IS NULL THEN d_usd ELSE 0 END) AS unattributed_cost`;
+
+const REPORT_TOTALS_SQL = `${TOTALS_SQL},
+  SUM(CASE WHEN ${TOKEN_OBSERVATION} AND d_tokens_in IS NOT NULL THEN 1 ELSE 0 END) AS known_input,
+  SUM(CASE WHEN ${TOKEN_OBSERVATION} AND d_tokens_out IS NOT NULL THEN 1 ELSE 0 END) AS known_output,
+  SUM(CASE WHEN ${TOKEN_OBSERVATION} AND (
+    CASE WHEN metric_name = 'claude_code.token.usage'
+      THEN d_tokens_in IS NULL AND d_tokens_out IS NULL
+      ELSE d_tokens_in IS NULL OR d_tokens_out IS NULL END
+  ) THEN 1 ELSE 0 END) AS unknown_tokens`;
+
+function breakdownTotals(row?: TotalsRow): TrendsBreakdown {
+  const summary = totals(row);
+  return {
+    ...summary,
+    tokens: summary.tokensIn + summary.tokensOut,
+    tokensInKnown: Number(row?.known_input ?? 0) > 0,
+    tokensOutKnown: Number(row?.known_output ?? 0) > 0,
+    unknownTokenCount: Number(row?.unknown_tokens ?? 0),
+  };
+}
+
+function reportTotals(row?: TotalsRow): TrendsTotals {
+  return { ...breakdownTotals(row), prompts: 0, sessions: 0 };
+}
 
 export class History {
   private sqlite: import('better-sqlite3').Database | null = null;
@@ -158,6 +187,7 @@ export class History {
         team_id TEXT, data ${jsonType} NOT NULL
       );
       CREATE INDEX IF NOT EXISTS aad_history_events_day ON aad_history_events(day);
+      CREATE INDEX IF NOT EXISTS aad_history_events_ts ON aad_history_events(ts);
       CREATE INDEX IF NOT EXISTS aad_history_events_agent ON aad_history_events(agent, ts);
       CREATE TABLE IF NOT EXISTS aad_history_usage (
         source TEXT NOT NULL, usage_id TEXT NOT NULL, ts BIGINT NOT NULL, day TEXT NOT NULL,
@@ -168,6 +198,7 @@ export class History {
         PRIMARY KEY (source, usage_id)
       );
       CREATE INDEX IF NOT EXISTS aad_history_usage_day ON aad_history_usage(day);
+      CREATE INDEX IF NOT EXISTS aad_history_usage_ts ON aad_history_usage(ts);
       CREATE INDEX IF NOT EXISTS aad_history_usage_agent ON aad_history_usage(agent, ts);
       CREATE INDEX IF NOT EXISTS aad_history_usage_work ON aad_history_usage(work_item_id, ts);
       CREATE TABLE IF NOT EXISTS aad_history_checkpoints (
@@ -419,7 +450,9 @@ export class History {
       const stored = document(value);
       const reviseCost =
         update.measurements?.costOrigin !== undefined &&
-        (stored.dUsd === null || stored.costOrigin === 'model');
+        (stored.dUsd === null ||
+          stored.costOrigin === 'model' ||
+          stored.costOrigin === 'historical_estimate');
       const dUsd = reviseCost
         ? update.measurements!.dUsd
         : (stored.dUsd ?? update.measurements?.dUsd ?? null);
@@ -432,6 +465,7 @@ export class History {
         cachedInputTokens: stored.cachedInputTokens ?? update.measurements?.cachedInputTokens,
         model: stored.model ?? update.measurements?.model,
         costOrigin: reviseCost ? update.measurements!.costOrigin : stored.costOrigin,
+        costEstimate: reviseCost ? update.measurements!.costEstimate : stored.costEstimate,
         costStatus:
           dUsd === null ? 'unknown' : stored.costStatus === 'measured' ? 'measured' : 'estimated',
       };
@@ -528,8 +562,8 @@ export class History {
   }
 
   private async teamTotals(
-    since: string,
-    until: string,
+    since: string | number,
+    until: string | number,
     legacyTeamAliases: ReadonlyMap<string, ActivityTeam>,
   ) {
     // Expand memberships only for per-team views. Global totals read the original ledger once.
@@ -560,15 +594,19 @@ export class History {
       `WITH scoped AS (
         SELECT *, ${memberships} AS memberships,
           CASE WHEN ${hasMemberships} THEN 0 WHEN team_id IS NOT NULL THEN 1 ELSE 0 END AS legacy_team
-        FROM aad_history_usage WHERE day>=? AND day<=?
-      ) SELECT ${id} AS team_id, ${name} AS team_name, legacy_team, MAX(ts) AS last_seen, ${TOTALS_SQL}
+        FROM aad_history_usage WHERE ${typeof since === 'number' ? 'ts>=? AND ts<?' : 'day>=? AND day<=?'}
+      ) SELECT ${id} AS team_id, ${name} AS team_name, legacy_team, MAX(ts) AS last_seen, ${REPORT_TOTALS_SQL}
         FROM scoped CROSS JOIN ${expanded} GROUP BY ${id}, ${name}, legacy_team`,
       [since, until],
     );
     // A rename retains its stable ID; use the most recently observed display name.
     const teams = new Map<
       string,
-      { teamId: string; teamName: string; lastSeen: number } & HistoryTotals
+      {
+        teamId: string;
+        teamName: string;
+        lastSeen: number;
+      } & TrendsBreakdown
     >();
     for (const row of rows) {
       const alias = row.legacy_team
@@ -577,7 +615,7 @@ export class History {
       const teamId = alias?.id ?? row.team_id;
       const teamName = alias?.name ?? row.team_name;
       const current = teams.get(teamId);
-      const next = totals(row);
+      const next = breakdownTotals(row);
       if (!current) {
         teams.set(teamId, {
           teamId,
@@ -591,8 +629,13 @@ export class History {
         current.teamName = teamName;
         current.lastSeen = Number(row.last_seen);
       }
-      for (const key of Object.keys(next) as Array<keyof HistoryTotals>) {
-        if (key === 'costKnown' || key === 'tokensKnown') {
+      for (const key of Object.keys(next) as Array<keyof typeof next>) {
+        if (
+          key === 'costKnown' ||
+          key === 'tokensKnown' ||
+          key === 'tokensInKnown' ||
+          key === 'tokensOutKnown'
+        ) {
           current[key] ||= next[key];
         } else {
           current[key] += next[key];
@@ -662,6 +705,162 @@ export class History {
       days: [...mapped.values()],
       byStream: streams,
     };
+  }
+
+  private async reportSeries(intervals: TrendsInterval[]): Promise<TrendsTotals[]> {
+    const result = intervals.map(() => reportTotals());
+    const since = intervals[0].start;
+    const until = intervals[intervals.length - 1].end;
+    // Boundaries are validated timestamps, never user-provided SQL expressions.
+    const bucket = `CASE ${intervals.map((interval, index) => `WHEN ts < ${interval.end} THEN ${index}`).join(' ')} ELSE -1 END`;
+    const [usage, sessions] = await Promise.all([
+      this.rows<TotalsRow & { bucket: number }>(
+        `SELECT ${bucket} AS bucket, ${REPORT_TOTALS_SQL}
+         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY bucket`,
+        [since, until],
+      ),
+      this.rows<{ bucket: number; sessions: number | string }>(
+        `SELECT bucket, COUNT(*) AS sessions FROM (
+           SELECT ${bucket} AS bucket, provider, session_id FROM aad_history_events
+           WHERE ts>=? AND ts<? AND session_id IS NOT NULL AND session_id<>''
+           UNION
+           SELECT ${bucket} AS bucket, provider, session_id FROM aad_history_usage
+           WHERE ts>=? AND ts<? AND session_id IS NOT NULL AND session_id<>''
+         ) active_sessions GROUP BY bucket`,
+        [since, until, since, until],
+      ),
+    ]);
+    for (const row of usage) {
+      result[Number(row.bucket)] = reportTotals(row);
+    }
+    for (const row of sessions) {
+      result[Number(row.bucket)].sessions = Number(row.sessions);
+    }
+    return result;
+  }
+
+  async trendsReport(
+    query: TrendsQuery,
+    legacyTeamAliases: ReadonlyMap<string, ActivityTeam> = new Map(),
+    now = Date.now(),
+  ): Promise<TrendsReport> {
+    const range = resolveTrendsRange(query, now);
+    const { start, end, previousStart, previousEnd } = range.period;
+    const retentionDays = this.options.retentionDays ?? config.retentionDays;
+    const report: TrendsReport = {
+      enabled: this.enabled,
+      backend: this.backend,
+      period: range.period,
+      summary: reportTotals(),
+      previous: reportTotals(),
+      buckets: range.buckets.map((interval) => ({ ...interval, ...reportTotals() })),
+      days: range.days.map((interval) => ({ ...interval, ...reportTotals() })),
+      byProvider: [],
+      byModel: [],
+      byStream: [],
+      coverage: {
+        retentionDays,
+        earliestAvailableAt: null,
+        currentComplete: false,
+        previousComplete: false,
+      },
+      insights: { averageDailyCostUsd: 0, peakDay: null },
+    };
+    if (!this.enabled) {
+      return report;
+    }
+    const model = this.pool ? "data->>'model'" : "json_extract(data, '$.model')";
+    const modelIdentity = `COALESCE(NULLIF(${model},''),'Unknown model')`;
+    const providerIdentity = "COALESCE(NULLIF(provider,''),'unknown')";
+    const [summary, previous, days, buckets, providers, models, teams, promptEvents, available] =
+      await Promise.all([
+        this.reportSeries([{ start, end, day: range.period.startDate }]),
+        this.reportSeries([{ start: previousStart, end: previousEnd, day: '' }]),
+        this.reportSeries(range.days),
+        range.buckets === range.days ? Promise.resolve(null) : this.reportSeries(range.buckets),
+        this.rows<TotalsRow & { provider: string }>(
+          `SELECT ${providerIdentity} AS provider, ${REPORT_TOTALS_SQL}
+         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY ${providerIdentity} ORDER BY cost DESC`,
+          [start, end],
+        ),
+        this.rows<TotalsRow & { provider: string; model: string }>(
+          `SELECT ${providerIdentity} AS provider, ${modelIdentity} AS model, ${REPORT_TOTALS_SQL}
+         FROM aad_history_usage WHERE ts>=? AND ts<? GROUP BY ${providerIdentity},${modelIdentity} ORDER BY cost DESC`,
+          [start, end],
+        ),
+        this.teamTotals(start, end, legacyTeamAliases),
+        this.loadPromptEvents(
+          previousStart - PROMPT_PAIR_WINDOW_MS,
+          Math.min(now, end + PROMPT_PAIR_WINDOW_MS),
+        ),
+        this.rows<{ earliest: number | string | null }>(
+          `SELECT MIN(ts) AS earliest FROM (
+          SELECT MIN(ts) AS ts FROM aad_history_events WHERE ts<=?
+          UNION ALL SELECT MIN(ts) AS ts FROM aad_history_usage WHERE ts<=?
+        ) observed_history`,
+          [now, now],
+        ),
+      ]);
+    report.summary = summary[0];
+    report.previous = previous[0];
+    report.days = range.days.map((interval, index) => ({ ...interval, ...days[index] }));
+    report.buckets =
+      range.buckets === range.days
+        ? report.days
+        : range.buckets.map((interval, index) => ({ ...interval, ...buckets![index] }));
+    report.byProvider = providers.map((row) => ({
+      provider: row.provider,
+      ...breakdownTotals(row),
+    }));
+    report.byModel = models.map((row) => ({
+      provider: row.provider,
+      model: row.model,
+      ...breakdownTotals(row),
+    }));
+    report.byStream = teams;
+    const tracker = new PromptTracker();
+    for (const event of promptEvents) {
+      tracker.record(event);
+    }
+    for (const prompt of tracker.values()) {
+      if (prompt.ts >= previousStart && prompt.ts < previousEnd) {
+        report.previous.prompts += 1;
+      }
+      if (prompt.ts < start || prompt.ts >= end) {
+        continue;
+      }
+      report.summary.prompts += 1;
+      const day = report.days.find(
+        (interval) => prompt.ts >= interval.start && prompt.ts < interval.end,
+      );
+      if (day) {
+        day.prompts += 1;
+      }
+      if (report.buckets !== report.days) {
+        const bucket = report.buckets.find(
+          (interval) => prompt.ts >= interval.start && prompt.ts < interval.end,
+        );
+        if (bucket) {
+          bucket.prompts += 1;
+        }
+      }
+    }
+    const earliest = available[0]?.earliest;
+    report.coverage.earliestAvailableAt =
+      earliest === null || earliest === undefined ? null : Number(earliest);
+    const retainedFrom = now - retentionDays * 86_400_000;
+    const isComplete = (since: number) =>
+      report.coverage.earliestAvailableAt !== null &&
+      since >= retainedFrom &&
+      report.coverage.earliestAvailableAt <= since;
+    report.coverage.currentComplete = isComplete(start);
+    report.coverage.previousComplete = isComplete(previousStart);
+    report.insights.averageDailyCostUsd = report.summary.costUsd / range.period.dayCount;
+    const peak = report.days
+      .filter((day) => day.costKnown)
+      .sort((left, right) => right.costUsd - left.costUsd)[0];
+    report.insights.peakDay = peak ? { day: peak.day, costUsd: peak.costUsd } : null;
+    return report;
   }
 
   async agentHistory(agent: string, requestedLimit = 200): Promise<unknown> {

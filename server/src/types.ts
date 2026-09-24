@@ -1,5 +1,6 @@
 // Shared domain types for the ingestion server.
 // The UI re-exports the WS contract (ServerMessage) from this module.
+import type { ModelPrice } from './model-cost.js';
 
 export type EventKind =
   | 'user_prompt' // OTel  claude_code.user_prompt
@@ -60,7 +61,14 @@ export interface UsageDelta {
   dTokensIn: number | null;
   dTokensOut: number | null;
   cachedInputTokens?: number;
-  costOrigin?: 'reported' | 'model';
+  costOrigin?: 'reported' | 'model' | 'historical_estimate';
+  costEstimate?: {
+    at: string;
+    method: 'configured-rate-backfill';
+    priceVersion: { at: number; rates: ModelPrice };
+    historicalRateVerified: boolean;
+    missingCacheAssumedZero: boolean;
+  };
   costStatus: 'measured' | 'estimated' | 'unknown';
   cumulative?: CumulativeSnapshot;
 }
@@ -80,7 +88,13 @@ export interface UsageAliasUpdate {
   // Complete the canonical observation, including corrections to a derived cost.
   measurements?: Pick<
     UsageDelta,
-    'dUsd' | 'dTokensIn' | 'dTokensOut' | 'cachedInputTokens' | 'model' | 'costOrigin'
+    | 'dUsd'
+    | 'dTokensIn'
+    | 'dTokensOut'
+    | 'cachedInputTokens'
+    | 'model'
+    | 'costOrigin'
+    | 'costEstimate'
   >;
 }
 

@@ -14,13 +14,16 @@ export function usePricingCatalogue(resolver: PriceResolver): () => void {
   };
 }
 /** A user-configured valuation, never a billing amount. Missing rates remain unknown. */
-export function estimateModelCost(usage: {
-  model?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedInputTokens?: number;
-  ts?: number;
-}): number | null {
+export function estimateModelCost(
+  usage: {
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    ts?: number;
+  },
+  savedPrice?: ModelPrice,
+): number | null {
   if (!usage.model || usage.inputTokens === undefined || usage.outputTokens === undefined) {
     return null;
   }
@@ -34,16 +37,18 @@ export function estimateModelCost(usage: {
     return null;
   }
   let prices: Record<string, ModelPrice> = {};
-  if (!catalogueResolver) {
+  if (!catalogueResolver && !savedPrice) {
     try {
       prices = JSON.parse(process.env.MODEL_PRICING_JSON ?? '{}');
     } catch {
       return null;
     }
   }
-  const price = catalogueResolver
-    ? catalogueResolver(usage.model, usage.ts ?? Date.now())
-    : prices?.[usage.model];
+  const price =
+    savedPrice ??
+    (catalogueResolver
+      ? catalogueResolver(usage.model, usage.ts ?? Date.now())
+      : prices?.[usage.model]);
   if (
     !price ||
     ![price.inputPerMillionUsd, price.outputPerMillionUsd].every(

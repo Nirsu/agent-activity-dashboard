@@ -13,6 +13,8 @@ import { safeId, safeLabel } from './session-metadata.js';
 import { parseLogs, parseMetrics } from './otlp/parse.js';
 import { registerWebSocket } from './ws.js';
 import { history } from './db.js';
+import { InvalidTrendsQuery } from './trends/range.js';
+import type { TrendsQuery } from './trends/types.js';
 import { closePostgresPool } from './persistence/postgres.js';
 import { PersistenceQueue } from './persistence/queue.js';
 import { cachedTitle, isTicketKey, resolveTitle } from './jira.js';
@@ -511,8 +513,26 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.get<{ Params: { promptId: string } }>('/api/prompt/:promptId', async (req) => ({
       events: store.getPromptEvents(req.params.promptId),
     }));
-    app.get<{ Querystring: { days?: string } }>('/api/trends', async (req) => {
+    app.get<{ Querystring: TrendsQuery & { days?: string } }>('/api/trends', async (req, reply) => {
       await writes.flush();
+      if (req.query.period !== undefined) {
+        try {
+          const report = await history.trendsReport(req.query, access.legacyTeamAliases());
+          const ignoredModels = new Set(
+            pricing.state().models.filter((model) => model.ignored).map((model) => model.model),
+          );
+          report.coverage.ignoredCostCount = report.byModel.reduce(
+            (count, row) => count + (ignoredModels.has(row.model) ? row.unknownUsageCount : 0),
+            0,
+          );
+          return report;
+        } catch (error) {
+          if (error instanceof InvalidTrendsQuery) {
+            return reply.code(400).send({ error: error.message });
+          }
+          throw error;
+        }
+      }
       const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
       return history.trends(days, access.legacyTeamAliases());
     });

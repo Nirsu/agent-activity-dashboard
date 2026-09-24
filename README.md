@@ -26,10 +26,29 @@ and delivery comparisons are handled by external services.
 
 Originally built for a POC on developer Macs. The Node application runs on
 Windows, macOS and Linux; Docker uses Linux containers. Live state uses an in-memory ring buffer;
-privacy-safe history is retained for 60 rolling days by default. `DATABASE_URL`
+privacy-safe history is retained for 190 rolling days by default. `DATABASE_URL`
 selects PostgreSQL; SQLite remains available when it is unset or explicitly empty.
 See [PostgreSQL setup and migration](POSTGRES.md) and
 [Codex desktop / Claude Code CLI telemetry](TELEMETRY.md).
+
+## Usage trends
+
+Trends supports Today, 7 days, 14 days, This month, 30 days, 90 days, and custom
+date ranges of up to 90 days. Dates follow the displayed server time zone.
+Single-day charts use hourly buckets; longer selections use days or, beyond
+45 days, weeks. Switch between cost, tokens and prompts, or explore cost and
+token breakdowns by provider, model and team.
+
+Headline sessions are unique across the selected period. Comparisons use the
+preceding calendar window of the same length, ending at the same local clock
+position for an ongoing period. This month therefore compares with the preceding
+equally long window, rather than the entire previous month. Percent changes are
+withheld when the relevant measurements or historical coverage are incomplete.
+
+`RETENTION_DAYS` remains configurable. The 190-day default accommodates two
+90-day windows; existing environment overrides still apply. Increasing retention
+does not restore deleted observations. Trends shows available-history limits and
+keeps unavailable costs and tokens distinct from measured zero usage.
 
 ---
 
@@ -58,7 +77,7 @@ hooks (SessionStart, …) ──────►┤   ├─ POST /v1/logs      (
                                │   ├─ POST /v1/metrics
                                │   ├─ POST /activity     (hooks)
                                │   ├─ ring buffer (500 live events)
-                               │   ├─ PostgreSQL / SQLite history (60 days)
+                               │   ├─ PostgreSQL / SQLite history (190 days)
                                │   └─ WebSocket /live
                                └──────────────────► ui/  (React + Vite)
 ```

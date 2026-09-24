@@ -87,6 +87,38 @@ test('agent APIs remain available without human delivery endpoints', async () =>
   }
 });
 
+test('Trends validates report periods at the HTTP boundary and retains the legacy days API', async () => {
+  const app = await buildApp();
+  try {
+    for (const period of ['today', '7d', '14d', 'month', '30d', '90d']) {
+      const response = await app.inject(`/api/trends?period=${period}`);
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json().period.key, period);
+      assert.equal(typeof response.json().summary.sessions, 'number');
+    }
+    const custom = await app.inject('/api/trends?period=custom&start=2026-01-01&end=2026-01-02');
+    assert.equal(custom.statusCode, 200, custom.body);
+    assert.equal(custom.json().period.dayCount, 2);
+    for (const query of [
+      'period=invalid',
+      'period=custom',
+      'period=custom&start=2026-02-30&end=2026-03-02',
+      'period=custom&start=2026-01-03&end=2026-01-01',
+      'period=custom&start=2026-01-01&end=2026-05-01',
+    ]) {
+      const response = await app.inject(`/api/trends?${query}`);
+      assert.equal(response.statusCode, 400, response.body);
+      assert.equal(typeof response.json().error, 'string');
+    }
+    const legacy = await app.inject('/api/trends?days=7');
+    assert.equal(legacy.statusCode, 200);
+    assert.equal(legacy.json().days.length, 7);
+    assert.equal(legacy.json().period, undefined);
+  } finally {
+    await app.close();
+  }
+});
+
 test('hook ingestion exposes child lifecycle and hierarchy over the public state API', async () => {
   const app = await buildApp();
   try {
